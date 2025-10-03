@@ -1,11 +1,15 @@
 const { Sequelize } = require("sequelize");
 
-const sequelize = new Sequelize("dns_db", "root", "1245", {
-  host: "127.0.0.1",
-  dialect: "mysql",
-  // logging: console.log,
-  logging: false,
-  port: 3306,
-});
+const sequelize = new Sequelize(
+  process.env.DB_NAME,
+  process.env.DB_USER,
+  process.env.DB_PASSWORD,
+  {
+    host: process.env.DB_HOST, // must match service name in Docker Compose
+    dialect: "mysql",
+    logging: false,
+    port: 3306,
+  }
+);
 
 module.exports = sequelize;
