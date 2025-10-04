@@ -10,18 +10,40 @@ const app = express();
 app.use(express.json());
 
 const JWT_SECRET = "your_jwt_secret";
-
+const PORT = process.env.PORT || 5000;
 
 //Database Sync
-sequelize.sync({ alter: true })
-  .then(() => {
-    console.log("Database synced");
-    app.listen(5000, () => console.log("Server running on port 5000"));
-  })
-  .catch((err) => {
-    console.error("DB Sync Error:", err);
-  });
+// Retry DB connection
+async function connectWithRetry(retries = 10, delay = 5000) {
+  while (retries) {
+    try {
+      await sequelize.authenticate();
+      console.log("Database connected successfully");
 
+      await sequelize.sync({ alter: true });
+      console.log("Database synced");
+
+      // Start server only once
+      app.listen(PORT, () => console.log(`?? Server running on port ${PORT}`));
+      return; // ? exit function after success
+
+    } catch (err) {
+      retries -= 1;
+      console.error(`DB connection failed. Retries left: ${retries}`);
+      console.error(err.message);
+
+      if (!retries) {
+        console.error("Out of retries. Exiting...");
+        process.exit(1);
+      }
+
+      console.log(`Retrying in ${delay / 1000}s...`);
+      await new Promise(res => setTimeout(res, delay));
+    }
+  }
+}
+
+connectWithRetry();
 
 // Cors setup
 app.use(cors({ origin: "http://localhost:5173" }));

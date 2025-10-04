@@ -9,11 +9,13 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [showDashboard, setShowDashboard] = useState(false);
   const [selectedDomain, setSelectedDomain] = useState(null);
+   // API configuration
+  const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
 
   useEffect(() => {
     const token = localStorage.getItem('authToken');
     if (token) {
-      fetch('http://localhost:5000/protected', {
+      fetch(`${API_BASE_URL}/protected`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       .then(response => {

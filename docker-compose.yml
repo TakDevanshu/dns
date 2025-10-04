@@ -1,13 +1,17 @@
+version: "3.8"
+
 services:
   backend:
     build: ./backend
     ports:
       - "5000:5000"
     environment:
-      DB_HOST: db     
+      DB_HOST: db
       DB_USER: root
       DB_PASSWORD: "1245"
       DB_NAME: dns_db
+    depends_on:
+      - db
 
   db:
     image: mysql:8
@@ -17,9 +21,19 @@ services:
       MYSQL_ROOT_PASSWORD: "1245"
       MYSQL_DATABASE: dns_db
     ports:
-      - "3306:3306"  # <- exposes MySQL to host for Workbench
+      - "3306:3306"
     volumes:
       - db_data:/var/lib/mysql
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "80:80" # Vite dev server port
+    environment:
+      VITE_BACKEND_URL: http://backend:5000
+    depends_on:
+      - backend
 
 volumes:
   db_data:
