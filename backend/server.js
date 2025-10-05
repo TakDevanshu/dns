@@ -13,7 +13,6 @@ const JWT_SECRET = "your_jwt_secret";
 const PORT = process.env.PORT || 5000;
 
 //Database Sync
-// Retry DB connection
 async function connectWithRetry(retries = 10, delay = 5000) {
   while (retries) {
     try {
@@ -23,9 +22,8 @@ async function connectWithRetry(retries = 10, delay = 5000) {
       await sequelize.sync({ alter: true });
       console.log("Database synced");
 
-      // Start server only once
       app.listen(PORT, () => console.log(`?? Server running on port ${PORT}`));
-      return; // ? exit function after success
+      return;
 
     } catch (err) {
       retries -= 1;
@@ -46,7 +44,23 @@ async function connectWithRetry(retries = 10, delay = 5000) {
 connectWithRetry();
 
 // Cors setup
-app.use(cors({ origin: "http://localhost:5173" }));
+const allowedOrigins = [
+  "http://localhost:5173",    
+  "http://172.232.121.87"       
+];
+
+app.use(cors({
+  origin: function(origin, callback){
+    if(!origin) return callback(null, true); 
+    if(allowedOrigins.indexOf(origin) === -1){
+      const msg = "The CORS policy for this site does not allow access from the specified Origin.";
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true  // if using cookies or auth headers
+}));
+
 app.use(express.json());
 
 // Middleware for authentication of token
