@@ -9,7 +9,7 @@ const Dashboard = ({ onGoToConfig }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const userId = localStorage.getItem("userId");
-  const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
+  const API_BASE_URL = import.meta.env.VITE_BACKEND_URL;
   const getAuthToken = () => localStorage.getItem("authToken");
 
   const apiCall = async (endpoint, options = {}) => {
