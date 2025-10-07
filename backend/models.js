@@ -44,7 +44,30 @@ const DNSRecord = sequelize.define("DNSRecord", {
   userId: { type: DataTypes.INTEGER, allowNull: false }
 });
 
+const Zone = sequelize.define("Zone", {
+  domain: { type: DataTypes.STRING, unique: true, allowNull: false },
+  status: { type: DataTypes.ENUM("pending", "active", "suspended"), defaultValue: "pending" },
+  userId: { type: DataTypes.INTEGER, allowNull: false },
+  nameServers: { type: DataTypes.JSON, allowNull: false, defaultValue: () => (["ns1.yourdns.com", "ns2.yourdns.com", "ns3.yourdns.com"]) }
+});
+
+const AuditLog = sequelize.define("AuditLog", {
+  userId: { type: DataTypes.INTEGER, allowNull: false },
+  action: { type: DataTypes.STRING, allowNull: false }, // e.g. 'CREATE', 'UPDATE', 'DELETE'
+  entityType: { type: DataTypes.STRING, allowNull: false }, // e.g. 'DNSRecord', 'Zone', 'NameServer'
+  entityId: { type: DataTypes.INTEGER, allowNull: true }, // ID of the affected entity
+  domain: { type: DataTypes.STRING, allowNull: true },
+  details: { type: DataTypes.JSON, allowNull: true }, // Store what changed
+  timestamp: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+});
+
 DNSRecord.belongsTo(User, { foreignKey: "userId" });
 User.hasMany(DNSRecord, { foreignKey: "userId" });
 
-module.exports = { User, DNSRecord };
+User.hasMany(Zone, { foreignKey: "userId" });
+Zone.belongsTo(User, { foreignKey: "userId" });
+
+Zone.hasMany(DNSRecord, { foreignKey: "zoneId" });
+DNSRecord.belongsTo(Zone, { foreignKey: "zoneId" });
+
+module.exports = { User, DNSRecord, Zone, AuditLog };

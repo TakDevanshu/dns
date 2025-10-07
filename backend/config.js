@@ -13,4 +13,17 @@ const sequelize = new Sequelize(DB_NAME, DB_USER, DB_PASSWORD, {
   port: DB_PORT,
 });
 
+// Test connection and log details
+sequelize
+  .authenticate()
+  .then(() => {
+    console.log(`Connected to database: ${DB_NAME}`);
+    console.log(`Host: ${DB_HOST}`);
+    console.log(`User: ${DB_USER}`);
+    console.log(`Port: ${DB_PORT}`);
+  })
+  .catch((err) => {
+    console.error("Unable to connect to the database:", err);
+  });
+
 module.exports = sequelize;
