@@ -99,22 +99,16 @@ const Dashboard = ({ onGoToConfig }) => {
       setLoading(true);
       setError("");
       try {
-        const token = getAuthToken();
-        const resp = await fetch(`${API_BASE_URL}/zones/${selectedDomain}`, {
-          headers: {
-            "Content-Type": "application/json",
-            ...(token && { Authorization: `Bearer ${token}` }),
-          },
-        });
-        const data = await resp.json();
-        if (data.success) {
-          setZoneDetails(data.data);
+        const resp = await apiCall(`/zones/${selectedDomain}`);
+        if (resp.success && resp.data) {
+          setZoneDetails(resp.data);
         } else {
           setZoneDetails(null);
         }
       } catch (e) {
         setZoneDetails(null);
       }
+
       setLoading(false);
     };
     fetchZoneDetails();
@@ -167,29 +161,23 @@ const Dashboard = ({ onGoToConfig }) => {
   const handleSaveNS = async () => {
     setLoading(true);
     setError("");
+
     try {
-      const token = getAuthToken();
-      const resp = await fetch(
-        `${API_BASE_URL}/zones/${selectedDomain}/nameservers`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token && { Authorization: `Bearer ${token}` }),
-          },
-          body: JSON.stringify({ nameServers: nsInput }),
-        }
-      );
-      const data = await resp.json();
-      if (data.success) {
+      const resp = await apiCall(`/zones/${selectedDomain}/nameservers`, {
+        method: "PUT",
+        body: JSON.stringify({ nameServers: nsInput }),
+      });
+
+      if (resp.success) {
         setEditingNS(false);
         setZoneDetails((prev) => ({ ...prev, nameServers: nsInput }));
       } else {
-        setError(data.message || "Failed to update name servers");
+        setError(resp.message || "Failed to update name servers");
       }
     } catch (e) {
       setError("Failed to update name servers");
     }
+
     setLoading(false);
   };
 
