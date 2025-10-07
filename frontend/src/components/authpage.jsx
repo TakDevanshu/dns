@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { jwtDecode } from "jwt-decode";
 import "bootstrap/dist/css/bootstrap.min.css";
+import "./css/authpage.css";
 
 const AuthPage = ({ onAuthSuccess }) => {
   const [isLogin, setIsLogin] = useState(true);
