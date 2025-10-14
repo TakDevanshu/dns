@@ -2,6 +2,108 @@ import React, { useState, useEffect } from "react";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./css/configuration.css";
 
+// Helper to parse value for complex records
+function parseRecordValue(record) {
+  if (!record || !record.value) return record;
+  if (record.type === "SRV") {
+    const [priority, weight, port, ...targetArr] = record.value.split(" ");
+    return {
+      ...record,
+      priority,
+      weight,
+      port,
+      target: targetArr.join(" "),
+      displayValue: `${targetArr.join(
+        " "
+      )}:${port} (prio ${priority}, weight ${weight})`,
+    };
+  }
+  if (record.type === "SOA") {
+    const [primary, admin, serial, refresh, retry, expire, minimum] =
+      record.value.split(" ");
+    return {
+      ...record,
+      primary,
+      admin,
+      serial,
+      refresh,
+      retry,
+      expire,
+      minimum,
+      displayValue: `Primary: ${primary}, Admin: ${admin}, Serial: ${serial}`,
+    };
+  }
+  if (record.type === "CAA") {
+    const [flags, tag, ...valueArr] = record.value.split(" ");
+    return {
+      ...record,
+      flags,
+      tag,
+      caaValue: valueArr.join(" "),
+      displayValue: `flags: ${flags}, tag: ${tag}, value: ${valueArr.join(
+        " "
+      )}`,
+    };
+  }
+  // Default for other types
+  return { ...record, displayValue: record.value };
+}
+
+// Add this helper function above your component or inside it
+function buildPayload(formData, userId, selectedDomain) {
+  const base = {
+    domain: selectedDomain,
+    type: formData.type,
+    name: formData.name,
+    ttl: Number(formData.ttl),
+    userId,
+    comment: formData.comment || "",
+  };
+  switch (formData.type) {
+    case "A":
+    case "AAAA":
+    case "CNAME":
+    case "TXT":
+    case "NS":
+    case "PTR":
+      return { ...base, value: formData.value };
+    case "MX":
+      return {
+        ...base,
+        value: formData.value,
+        priority: Number(formData.priority),
+      };
+    case "SRV":
+      return {
+        ...base,
+        priority: Number(formData.priority),
+        weight: Number(formData.weight),
+        port: Number(formData.port),
+        target: formData.target,
+      };
+    case "SOA":
+      return {
+        ...base,
+        primary: formData.primary,
+        admin: formData.admin,
+        serial: Number(formData.serial),
+        refresh: Number(formData.refresh),
+        retry: Number(formData.retry),
+        expire: Number(formData.expire),
+        minimum: Number(formData.minimum),
+      };
+    case "CAA":
+      return {
+        ...base,
+        flags: Number(formData.flags),
+        tag: formData.tag,
+        value: formData.value,
+      };
+    default:
+      return base;
+  }
+}
+
 const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   const [domain, setDomain] = useState(selectedDomain || "");
   const [userDomains, setUserDomains] = useState([]);
@@ -25,11 +127,23 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   // Form data for new/edit record
   const [formData, setFormData] = useState({
     domain: "",
-    type: "A",
+    type: "",
     name: "",
     value: "",
-    ttl: 3600,
+    ttl: "",
     priority: "",
+    weight: "",
+    port: "",
+    target: "",
+    primary: "",
+    admin: "",
+    serial: "",
+    refresh: "",
+    retry: "",
+    expire: "",
+    minimum: "",
+    flags: "",
+    tag: "",
     comment: "",
   });
 
@@ -140,9 +254,9 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
       const response = await apiCall(`/domains/user/${userId}`);
       if (response.success && response.data.domains) {
         setUserDomains(response.data.domains);
-        // If current domain is missing, select first available or clear
-        if (!response.data.domains.includes(domain)) {
-          setDomain(response.data.domains[0] || "");
+        // Fix: Use .domain for default selection
+        if (!response.data.domains.find((d) => d.domain === domain)) {
+          setDomain(response.data.domains[0]?.domain || "");
         }
       } else {
         setUserDomains([]);
@@ -174,8 +288,44 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   };
 
   const handleSubmit = async () => {
-    if (!formData.name || !formData.value) {
-      setError("Please fill in all required fields");
+    setError("");
+    // Validation for required fields
+    if (!formData.name) {
+      setError("Record name is required");
+      return;
+    }
+
+    if (formData.type === "SRV") {
+      const { priority, weight, port, target } = formData;
+      if (!priority || !weight || !port || !target) {
+        setError(
+          "All SRV fields (priority, weight, port, target) are required"
+        );
+        return;
+      }
+    } else if (formData.type === "SOA") {
+      const { primary, admin, serial, refresh, retry, expire, minimum } =
+        formData;
+      if (
+        !primary ||
+        !admin ||
+        !serial ||
+        !refresh ||
+        !retry ||
+        !expire ||
+        !minimum
+      ) {
+        setError("All SOA fields are required");
+        return;
+      }
+    } else if (formData.type === "CAA") {
+      const { flags, tag, value } = formData;
+      if (!flags || !tag || !value) {
+        setError("All CAA fields (flags, tag, value) are required");
+        return;
+      }
+    } else if (!formData.value) {
+      setError("Record value is required");
       return;
     }
 
@@ -184,46 +334,33 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
       ["MX", "SRV"].includes(formData.type) &&
       (!formData.priority || formData.priority < 0 || formData.priority > 65535)
     ) {
-      setError("Valid priority (0-65535) required for MX/SRV records");
+      setError("Valid priority (0–65535) required for MX/SRV records");
       return;
     }
 
     setLoading(true);
     setError("");
 
+    // Build the payload
+    const payload = buildPayload(formData, userId, selectedDomain);
+
     try {
-      const payload = {
-        ...formData,
-        domain,
-        userId,
-        ...(formData.priority && { priority: parseInt(formData.priority) }),
-        ttl: parseInt(formData.ttl),
-      };
-
-      let response;
-
-      if (editingRecord) {
-        // Update existing record
-        response = await apiCall(`/domains/${editingRecord.id}`, {
-          method: "PUT",
-          body: JSON.stringify(payload),
-        });
-      } else {
-        // Create new record
-        response = await apiCall("/domains/create", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
+      const response = await apiCall("/domains/create", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!response.success) {
+        setError(response.message || "Failed to save record");
+        return;
       }
 
-      if (response.success) {
-        setShowModal(false);
-        resetForm();
-        await fetchRecords();
-        await fetchStats();
-      }
+      setShowModal(false);
+      resetForm();
+      await fetchRecords();
+      await fetchStats();
     } catch (error) {
-      console.error("Error saving record:", error);
+      setError(error.message || "Failed to save record");
     }
     setLoading(false);
   };
@@ -249,6 +386,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
     setLoading(false);
   };
 
+  // Reset form should clear all fields
   const resetForm = () => {
     setFormData({
       domain: "",
@@ -257,6 +395,18 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
       value: "",
       ttl: 3600,
       priority: "",
+      weight: "",
+      port: "",
+      target: "",
+      primary: "",
+      admin: "",
+      serial: "",
+      refresh: "",
+      retry: "",
+      expire: "",
+      minimum: "",
+      flags: "",
+      tag: "",
       comment: "",
     });
     setEditingRecord(null);
@@ -315,17 +465,20 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   }, [error]);
 
   return (
-    <div className="dns-management">
+    <div className="dns-config-management">
       {loading && (
-        <div className="loading-overlay">
-          <div className="spinner-border spinner-border-custom" role="status">
+        <div className="dns-config-loading-overlay">
+          <div
+            className="spinner-border dns-config-spinner-custom"
+            role="status"
+          >
             <span className="visually-hidden">Loading...</span>
           </div>
         </div>
       )}
 
       {error && (
-        <div className="error-alert">
+        <div className="dns-config-error-alert">
           <div
             className="alert alert-danger alert-dismissible fade show"
             role="alert"
@@ -341,7 +494,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         </div>
       )}
 
-      <div className="brand-header">
+      <div className="dns-config-brand-header">
         <div className="container">
           <div className="row align-items-center">
             <div className="col">
@@ -353,7 +506,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
             <div className="col-auto d-flex align-items-center gap-2">
               {onGoToDashboard && (
                 <button
-                  className="btn btn-outline-primary dashboard-btn me-2 fw-bold px-4 py-2"
+                  className="btn btn-outline-primary dns-config-dashboard-btn me-2 fw-bold px-4 py-2"
                   style={{
                     borderWidth: 2,
                     fontSize: "1rem",
@@ -369,7 +522,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
               )}
               {onLogout && (
                 <button
-                  className="btn btn-outline-primary dashboard-btn me-2 fw-bold px-4 py-2"
+                  className="btn btn-outline-primary dns-config-dashboard-btn me-2 fw-bold px-4 py-2"
                   onClick={onLogout}
                 >
                   Logout
@@ -380,21 +533,24 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         </div>
       </div>
 
-      <div className="container">
+      <div className="container config-container">
         {/* Domain Selector */}
-        <div className="domain-selector">
+        <div className="dns-config-domain-selector">
           <div className="row align-items-center">
             <div className="col-md-6">
               <label className="form-label fw-bold">Current Domain</label>
               {userDomains.length > 0 ? (
                 <select
-                  className="form-select form-select-lg"
+                  className="form-select form-select-md"
                   value={domain}
                   onChange={(e) => setDomain(e.target.value)}
                 >
                   {userDomains.map((dom) => (
-                    <option key={dom} value={dom}>
-                      {dom}
+                    <option key={dom.domain} value={dom.domain}>
+                      {dom.domain}
+                      {dom.owner && dom.owner.merchant_name
+                        ? ` (Owner: ${dom.owner.merchant_name})`
+                        : ""}
                     </option>
                   ))}
                 </select>
@@ -408,6 +564,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
               <button
                 className="btn btn-primary btn-lg me-2"
                 onClick={() => setShowAddDomainModal(true)}
+                style={{ width: "auto" }}
               >
                 <i className="bi bi-plus-circle me-2"></i>
                 Add Domain
@@ -416,6 +573,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                 className="btn btn-primary btn-lg"
                 onClick={() => openModal()}
                 disabled={!domain}
+                style={{ width: "auto" }}
               >
                 <i className="bi bi-plus-circle me-2"></i>
                 Add DNS Record
@@ -432,7 +590,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
           >
             <div className="modal-dialog">
               <div className="modal-content">
-                <div className="modal-header">
+                <div className="modal-header dns-config-modal-header">
                   <h5 className="modal-title">Add New Domain</h5>
                   <button
                     type="button"
@@ -447,7 +605,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                   <label className="form-label">Domain Name</label>
                   <input
                     type="text"
-                    className="form-control"
+                    className="form-control dns-config-form-control"
                     placeholder="e.g. mydomain.com"
                     value={newDomain}
                     onChange={(e) => setNewDomain(e.target.value)}
@@ -468,7 +626,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                   </button>
                   <button
                     type="button"
-                    className="btn btn-primary"
+                    className="btn btn-primary dns-config-btn-primary"
                     onClick={handleAddDomain}
                     disabled={addDomainLoading}
                   >
@@ -487,19 +645,21 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         )}
 
         {/* Statistics Cards */}
-        <div className="row mb-4">
+        <div className="row mb-4 stats">
           <div className="col-md-3 mb-3">
-            <div className="card stats-card">
+            <div className="card dns-config-stats-card">
               <div className="card-body text-center">
-                <div className="stats-number">{stats.totalRecords || 0}</div>
+                <div className="dns-config-stats-number">
+                  {stats.totalRecords || 0}
+                </div>
                 <div className="text-muted">Total Records</div>
               </div>
             </div>
           </div>
           <div className="col-md-3 mb-3">
-            <div className="card stats-card">
+            <div className="card dns-config-stats-card">
               <div className="card-body text-center">
-                <div className="stats-number text-success">
+                <div className="dns-config-stats-number text-success">
                   {stats.activeRecords || 0}
                 </div>
                 <div className="text-muted">Active Records</div>
@@ -507,9 +667,9 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
             </div>
           </div>
           <div className="col-md-3 mb-3">
-            <div className="card stats-card">
+            <div className="card dns-config-stats-card">
               <div className="card-body text-center">
-                <div className="stats-number text-warning">
+                <div className="dns-config-stats-number text-warning">
                   {stats.inactiveRecords || 0}
                 </div>
                 <div className="text-muted">Inactive Records</div>
@@ -517,9 +677,9 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
             </div>
           </div>
           <div className="col-md-3 mb-3">
-            <div className="card stats-card">
+            <div className="card dns-config-stats-card">
               <div className="card-body text-center">
-                <div className="stats-number">
+                <div className="dns-config-stats-number">
                   {Object.keys(stats.recordsByType || {}).length}
                 </div>
                 <div className="text-muted">Record Types</div>
@@ -529,12 +689,12 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         </div>
 
         {/* Filters */}
-        <div className="filter-container">
+        <div className="dns-config-filter-container">
           <div className="row">
             <div className="col-md-4 mb-3">
               <label className="form-label">Filter by Type</label>
               <select
-                className="form-select"
+                className="form-select dns-config-form-select"
                 value={filters.type}
                 onChange={(e) =>
                   setFilters({ ...filters, type: e.target.value })
@@ -552,7 +712,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
               <label className="form-label">Filter by Name</label>
               <input
                 type="text"
-                className="form-control"
+                className="form-control dns-config-form-control"
                 placeholder="Enter record name..."
                 value={filters.name}
                 onChange={(e) =>
@@ -563,7 +723,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
             <div className="col-md-4 mb-3">
               <label className="form-label">Filter by Status</label>
               <select
-                className="form-select"
+                className="form-select dns-config-form-select"
                 value={filters.isActive}
                 onChange={(e) =>
                   setFilters({ ...filters, isActive: e.target.value })
@@ -578,13 +738,13 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         </div>
 
         {/* Records Table */}
-        <div className="table-container">
+        <div className="dns-config-table-container">
           <table className="table table-hover mb-0">
             <thead>
               <tr>
                 <th>Type</th>
                 <th>Name</th>
-                <th>Value</th>
+                <th>Value / Details</th>
                 <th>TTL</th>
                 <th>Priority</th>
                 <th>Status</th>
@@ -593,46 +753,164 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
             </thead>
             <tbody>
               {records.length > 0 ? (
-                records.map((record) => (
-                  <tr key={record.id}>
-                    <td>
-                      <span className="record-type-badge">{record.type}</span>
-                    </td>
-                    <td>
-                      <strong>{record.name || "@"}</strong>
-                    </td>
-                    <td>
-                      <code className="text-break">{record.value}</code>
-                    </td>
-                    <td>{record.ttl}s</td>
-                    <td>{record.priority || "-"}</td>
-                    <td>
-                      <span
-                        className={
-                          record.isActive ? "status-active" : "status-inactive"
-                        }
-                      >
-                        {record.isActive ? "● Active" : "○ Inactive"}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="btn-group">
-                        <button
-                          className="btn btn-outline-primary btn-sm"
-                          onClick={() => openModal(record)}
+                records.map((rec) => {
+                  const record = parseRecordValue(rec);
+                  return (
+                    <tr key={record.id}>
+                      <td>
+                        <span className="dns-config-record-type-badge">
+                          {record.type}
+                        </span>
+                      </td>
+                      <td>
+                        <strong>{record.name || "@"}</strong>
+                      </td>
+                      {/* Value column: show parsed fields for complex types */}
+                      <td>
+                        {record.type === "SRV" ? (
+                          <div>
+                            <div>
+                              <b>Target:</b> {record.target}
+                            </div>
+                            <div>
+                              <b>Port:</b> {record.port}
+                            </div>
+                            <div>
+                              <b>Priority:</b> {record.priority}
+                            </div>
+                            <div>
+                              <b>Weight:</b> {record.weight}
+                            </div>
+                          </div>
+                        ) : record.type === "SOA" ? (
+                          <div>
+                            <div>
+                              <b>Primary:</b> {record.primary}
+                            </div>
+                            <div>
+                              <b>Admin:</b> {record.admin}
+                            </div>
+                            <div>
+                              <b>Serial:</b> {record.serial}
+                            </div>
+                            <div>
+                              <b>Refresh:</b> {record.refresh}
+                            </div>
+                            <div>
+                              <b>Retry:</b> {record.retry}
+                            </div>
+                            <div>
+                              <b>Expire:</b> {record.expire}
+                            </div>
+                            <div>
+                              <b>Minimum:</b> {record.minimum}
+                            </div>
+                          </div>
+                        ) : record.type === "CAA" ? (
+                          <div>
+                            <div>
+                              <b>Flags:</b> {record.flags}
+                            </div>
+                            <div>
+                              <b>Tag:</b> {record.tag}
+                            </div>
+                            <div>
+                              <b>Value:</b> {record.caaValue}
+                            </div>
+                          </div>
+                        ) : record.type === "MX" ? (
+                          <div>
+                            <div>
+                              <b>Mail Server:</b> {record.value}
+                            </div>
+                            <div>
+                              <b>Priority:</b> {record.priority}
+                            </div>
+                          </div>
+                        ) : record.type === "PTR" ? (
+                          <div>
+                            <div>
+                              <b>Pointer:</b> {record.value}
+                            </div>
+                          </div>
+                        ) : record.type === "CNAME" ? (
+                          <div>
+                            <div>
+                              <b>Alias For:</b> {record.value}
+                            </div>
+                          </div>
+                        ) : record.type === "NS" ? (
+                          <div>
+                            <div>
+                              <b>Name Server:</b> {record.value}
+                            </div>
+                          </div>
+                        ) : record.type === "A" ? (
+                          <div>
+                            <div>
+                              <b>IPv4 Address:</b> {record.value}
+                            </div>
+                          </div>
+                        ) : record.type === "AAAA" ? (
+                          <div>
+                            <div>
+                              <b>IPv6 Address:</b> {record.value}
+                            </div>
+                          </div>
+                        ) : record.type === "TXT" ? (
+                          <div>
+                            <div>
+                              <b>Text:</b> {record.value}
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div>
+                              <b>Value:</b> {record.value}
+                            </div>
+                          </div>
+                        )}
+                      </td>
+                      {/* TTL */}
+                      <td>{record.ttl}s</td>
+                      {/* Priority: show for MX and SRV */}
+                      <td>
+                        {["MX", "SRV"].includes(record.type)
+                          ? record.priority
+                          : "-"}
+                      </td>
+                      {/* Status */}
+                      <td>
+                        <span
+                          className={
+                            record.isActive
+                              ? "dns-config-status-active"
+                              : "dns-config-status-inactive"
+                          }
                         >
-                          Edit
-                        </button>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDelete(record.id)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                          {record.isActive ? "● Active" : "○ Inactive"}
+                        </span>
+                      </td>
+                      {/* Actions */}
+                      <td>
+                        <div className="btn-group">
+                          <button
+                            className="btn btn-outline-primary dns-config-btn-outline-primary btn-sm"
+                            onClick={() => openModal(record)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="btn btn-danger dns-config-btn-danger btn-sm"
+                            onClick={() => handleDelete(record.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               ) : (
                 <tr>
                   <td colSpan="7" className="text-center py-4">
@@ -650,12 +928,12 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         {/* Pagination */}
         {totalPages > 1 && (
           <nav className="mt-4">
-            <ul className="pagination justify-content-center">
+            <ul className="pagination justify-content-center dns-config-pagination">
               <li
                 className={`page-item ${currentPage === 1 ? "disabled" : ""}`}
               >
                 <button
-                  className="page-link"
+                  className="page-link dns-config-page-link"
                   onClick={() => setCurrentPage(currentPage - 1)}
                   disabled={currentPage === 1}
                 >
@@ -670,7 +948,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                   }`}
                 >
                   <button
-                    className="page-link"
+                    className="page-link dns-config-page-link"
                     onClick={() => setCurrentPage(i + 1)}
                   >
                     {i + 1}
@@ -683,7 +961,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                 }`}
               >
                 <button
-                  className="page-link"
+                  className="page-link dns-config-page-link"
                   onClick={() => setCurrentPage(currentPage + 1)}
                   disabled={currentPage === totalPages}
                 >
@@ -704,7 +982,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         >
           <div className="modal-dialog modal-lg">
             <div className="modal-content">
-              <div className="modal-header">
+              <div className="modal-header dns-config-modal-header">
                 <h5 className="modal-title">
                   {editingRecord ? "Edit DNS Record" : "Add New DNS Record"}
                 </h5>
@@ -714,13 +992,15 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                   onClick={() => setShowModal(false)}
                 ></button>
               </div>
+
               <div>
                 <div className="modal-body">
+                  {/* Record type and name */}
                   <div className="row">
                     <div className="col-md-6 mb-3">
                       <label className="form-label">Record Type</label>
                       <select
-                        className="form-select"
+                        className="form-select dns-config-form-select"
                         value={formData.type}
                         onChange={(e) =>
                           setFormData({ ...formData, type: e.target.value })
@@ -733,11 +1013,12 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                         ))}
                       </select>
                     </div>
+
                     <div className="col-md-6 mb-3">
                       <label className="form-label">Name *</label>
                       <input
                         type="text"
-                        className="form-control"
+                        className="form-control dns-config-form-control"
                         placeholder="www, @, subdomain..."
                         value={formData.name}
                         onChange={(e) =>
@@ -749,35 +1030,311 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                     </div>
                   </div>
 
-                  <div className="mb-3">
-                    <label className="form-label">Value *</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      placeholder={
-                        formData.type === "A"
-                          ? "192.168.1.1"
-                          : formData.type === "AAAA"
-                          ? "2001:db8::1"
-                          : formData.type === "CNAME"
-                          ? "example.com"
-                          : formData.type === "MX"
-                          ? "mail.example.com"
-                          : "Record value..."
-                      }
-                      value={formData.value}
-                      onChange={(e) =>
-                        setFormData({ ...formData, value: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
+                  {/* ===== MAIN VALUE FIELDS (depends on record type) ===== */}
+                  {["A", "AAAA", "CNAME", "TXT", "NS", "PTR"].includes(
+                    formData.type
+                  ) && (
+                    <div className="mb-3">
+                      <label className="form-label">
+                        {formData.type === "PTR" ? "Pointer *" : "Value *"}
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control dns-config-form-control"
+                        placeholder={
+                          formData.type === "A"
+                            ? "192.168.1.1"
+                            : formData.type === "AAAA"
+                            ? "2001:db8::1"
+                            : formData.type === "CNAME"
+                            ? "example.com"
+                            : formData.type === "NS"
+                            ? "ns1.example.com"
+                            : formData.type === "PTR"
+                            ? "target.domain.com"
+                            : "Record value..."
+                        }
+                        value={formData.value || ""}
+                        onChange={(e) =>
+                          setFormData({ ...formData, value: e.target.value })
+                        }
+                        required
+                      />
+                    </div>
+                  )}
 
+                  {/* ===== MX record fields ===== */}
+                  {formData.type === "MX" && (
+                    <div className="row">
+                      <div className="col-md-6 mb-3">
+                        <label className="form-label">Mail Server *</label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          placeholder="mail.example.com"
+                          value={formData.value || ""}
+                          onChange={(e) =>
+                            setFormData({ ...formData, value: e.target.value })
+                          }
+                          required
+                        />
+                      </div>
+                      <div className="col-md-6 mb-3">
+                        <label className="form-label">Priority *</label>
+                        <input
+                          type="number"
+                          className="form-control"
+                          placeholder="10"
+                          min="0"
+                          max="65535"
+                          value={formData.priority || ""}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              priority: e.target.value,
+                            })
+                          }
+                          required
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ===== SRV record fields ===== */}
+                  {formData.type === "SRV" && (
+                    <>
+                      <div className="row">
+                        <div className="col-md-3 mb-3">
+                          <label className="form-label">Priority *</label>
+                          <input
+                            type="number"
+                            className="form-control dns-config-form-control"
+                            placeholder="10"
+                            min="0"
+                            max="65535"
+                            value={formData.priority || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                priority: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-3 mb-3">
+                          <label className="form-label">Weight *</label>
+                          <input
+                            type="number"
+                            className="form-control dns-config-form-control"
+                            placeholder="5"
+                            value={formData.weight || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                weight: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-3 mb-3">
+                          <label className="form-label">Port *</label>
+                          <input
+                            type="number"
+                            className="form-control dns-config-form-control"
+                            placeholder="443"
+                            value={formData.port || ""}
+                            onChange={(e) =>
+                              setFormData({ ...formData, port: e.target.value })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-3 mb-3">
+                          <label className="form-label">Target *</label>
+                          <input
+                            type="text"
+                            className="form-control dns-config-form-control"
+                            placeholder="example.com"
+                            value={formData.target || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                target: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* ===== SOA record fields ===== */}
+                  {formData.type === "SOA" && (
+                    <>
+                      <div className="row">
+                        <div className="col-md-6 mb-3">
+                          <label className="form-label">Primary NS *</label>
+                          <input
+                            type="text"
+                            className="form-control"
+                            value={formData.primary || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                primary: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-6 mb-3">
+                          <label className="form-label">Admin Email *</label>
+                          <input
+                            type="text"
+                            className="form-control"
+                            value={formData.admin || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                admin: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      <div className="row">
+                        <div className="col-md-4 mb-3">
+                          <label className="form-label">Serial *</label>
+                          <input
+                            type="number"
+                            className="form-control"
+                            value={formData.serial || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                serial: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-4 mb-3">
+                          <label className="form-label">Refresh *</label>
+                          <input
+                            type="number"
+                            className="form-control"
+                            value={formData.refresh || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                refresh: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-4 mb-3">
+                          <label className="form-label">Retry *</label>
+                          <input
+                            type="number"
+                            className="form-control"
+                            value={formData.retry || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                retry: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-4 mb-3">
+                          <label className="form-label">Expire *</label>
+                          <input
+                            type="number"
+                            className="form-control"
+                            value={formData.expire || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                expire: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="col-md-4 mb-3">
+                          <label className="form-label">Minimum *</label>
+                          <input
+                            type="number"
+                            className="form-control"
+                            value={formData.minimum || ""}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                minimum: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* ===== CAA record fields ===== */}
+                  {formData.type === "CAA" && (
+                    <div className="row">
+                      <div className="col-md-4 mb-3">
+                        <label className="form-label">Flags *</label>
+                        <input
+                          type="number"
+                          className="form-control"
+                          value={formData.flags || ""}
+                          onChange={(e) =>
+                            setFormData({ ...formData, flags: e.target.value })
+                          }
+                          required
+                        />
+                      </div>
+                      <div className="col-md-4 mb-3">
+                        <label className="form-label">Tag *</label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={formData.tag || ""}
+                          onChange={(e) =>
+                            setFormData({ ...formData, tag: e.target.value })
+                          }
+                          required
+                        />
+                      </div>
+                      <div className="col-md-4 mb-3">
+                        <label className="form-label">Value *</label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={formData.value || ""}
+                          onChange={(e) =>
+                            setFormData({ ...formData, value: e.target.value })
+                          }
+                          required
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ===== TTL & Comment ===== */}
                   <div className="row">
                     <div className="col-md-6 mb-3">
                       <label className="form-label">TTL (seconds)</label>
                       <select
-                        className="form-select"
+                        className="form-select dns-config-form-select"
                         value={formData.ttl}
                         onChange={(e) =>
                           setFormData({
@@ -793,32 +1350,12 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                         <option value={86400}>24 hours (86400)</option>
                       </select>
                     </div>
-                    {["MX", "SRV"].includes(formData.type) && (
-                      <div className="col-md-6 mb-3">
-                        <label className="form-label">Priority *</label>
-                        <input
-                          type="number"
-                          className="form-control"
-                          placeholder="10"
-                          min="0"
-                          max="65535"
-                          value={formData.priority}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              priority: e.target.value,
-                            })
-                          }
-                          required
-                        />
-                      </div>
-                    )}
                   </div>
 
                   <div className="mb-3">
                     <label className="form-label">Comment (Optional)</label>
                     <textarea
-                      className="form-control"
+                      className="form-control dns-config-form-control"
                       rows="2"
                       placeholder="Add a note about this record..."
                       value={formData.comment}
@@ -828,6 +1365,8 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                     />
                   </div>
                 </div>
+
+                {/* ===== Footer ===== */}
                 <div className="modal-footer">
                   <button
                     type="button"
@@ -838,7 +1377,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                   </button>
                   <button
                     type="button"
-                    className="btn btn-primary"
+                    className="btn btn-primary dns-config-btn-primary"
                     onClick={handleSubmit}
                     disabled={loading}
                   >

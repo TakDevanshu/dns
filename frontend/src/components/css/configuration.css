@@ -1,130 +1,162 @@
 :root {
-  --primary-red: #cb2d3e;
-  --dark-red: #8b1e2b;
-  --light-red: #e85a68;
-  --pale-red: #fff0f1;
-  --gray-red: #a6363f;
-  --white: #ffffff;
-  --light-gray: #f5f5f5;
-  --medium-gray: #6c757d;
-  --dark-gray: #343a40;
-  --shadow-color: rgba(203, 45, 62, 0.1);
+  --dns-config-primary-red: #cb2d3e;
+  --dns-config-dark-red: #8b1e2b;
+  --dns-config-light-red: #e85a68;
+  --dns-config-pale-red: #fff0f1;
+  --dns-config-gray-red: #a6363f;
+  --dns-config-white: #ffffff;
+  --dns-config-light-gray: #f5f5f5;
+  --dns-config-medium-gray: #6c757d;
+  --dns-config-dark-gray: #343a40;
+  --dns-config-shadow-color: rgba(203, 45, 62, 0.1);
 }
 
-.dns-management {
-  background: var(--light-gray);
+.config-container {
+  max-width: 1300px; 
+  margin: 0 auto; 
+}
+
+.dns-config-management {
+  background: var(--dns-config-light-gray);
   min-height: 100vh;
 }
 
-.brand-header {
-  background: linear-gradient(135deg, var(--primary-red), var(--dark-red));
+.dns-config-brand-header {
+  background: linear-gradient(135deg, var(--dns-config-primary-red), var(--dns-config-dark-red));
   color: white;
   padding: 2rem 0;
   margin-bottom: 2rem;
-  box-shadow: 0 4px 20px var(--shadow-color);
+  box-shadow: 0 4px 20px var(--dns-config-shadow-color);
 }
 
-.btn-outline-primary.dashboard-btn {
-  color: var(--primary-red);
-  border-color: var(--primary-red);
+.btn-outline-primary.dns-config-dashboard-btn {
+  color: var(--dns-config-primary-red);
+  border-color: var(--dns-config-primary-red);
   background: rgba(255, 255, 255, 0.9);
   border-radius: 8px;
 }
 
-.btn-outline-primary.dashboard-btn:hover {
-  background: var(--primary-red);
-  border-color: var(--primary-red);
+.btn-outline-primary.dns-config-dashboard-btn:hover {
+  background: var(--dns-config-primary-red);
+  border-color: var(--dns-config-primary-red);
   color: white;
 }
 
-.btn-outline-primary.dashboard-btn:focus {
-  box-shadow: 0 0 0 0.2rem rgba(var(--primary-red), 0.25);
+.btn-outline-primary.dns-config-dashboard-btn:focus {
+  box-shadow: 0 0 0 0.2rem rgba(203, 45, 62, 0.25);
 }
 
-.stats-card {
+.stats {
+  background-color: #fff; 
+  border-radius: 12px; 
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+  padding: 2rem;
+  margin-bottom: 2rem; 
+}
+
+
+.dns-config-stats-card {
   background: white;
   border: none;
   border-radius: 12px;
-  box-shadow: 0 4px 15px var(--shadow-color);
+  box-shadow: 0 4px 15px var(--dns-config-shadow-color);
   transition: transform 0.2s ease;
   max-height: 150px;
 }
 
-.stats-card:hover {
+.dns-config-stats-card:hover {
   transform: translateY(-2px);
 }
 
-.stats-number {
+.dns-config-stats-number {
   font-size: 2rem;
   font-weight: bold;
-  color: var(--primary-red);
+  color: var(--dns-config-primary-red);
 }
 
+.dns-config-btn-primary,
 .btn-primary {
-  background: var(--primary-red);
-  border-color: var(--primary-red);
+  background: var(--dns-config-primary-red);
+  border-color: var(--dns-config-primary-red);
   border-radius: 8px;
   padding: 0.5rem 1.5rem;
   font-weight: 500;
 }
 
+.dns-config-btn-primary:hover,
 .btn-primary:hover {
-  background: var(--dark-red);
-  border-color: var(--dark-red);
+  background: var(--dns-config-dark-red);
+  border-color: var(--dns-config-dark-red);
 }
 
+.dns-config-btn-outline-primary,
 .btn-outline-primary {
-  color: var(--primary-red);
-  border-color: var(--primary-red);
+  color: var(--dns-config-primary-red);
+  border-color: var(--dns-config-primary-red);
   border-radius: 8px;
 }
 
+.dns-config-btn-outline-primary:hover,
 .btn-outline-primary:hover {
-  background: var(--primary-red);
-  border-color: var(--primary-red);
+  background: var(--dns-config-primary-red);
+  border-color: var(--dns-config-primary-red);
 }
 
+.dns-config-btn-danger,
 .btn-danger {
-  background: var(--gray-red);
-  border-color: var(--gray-red);
+  background: var(--dns-config-gray-red);
+  border-color: var(--dns-config-gray-red);
   border-radius: 6px;
 }
 
-.form-control,
+.dns-config-form-control,
+.form-control {
+  border-radius: 8px;
+  border: 2px solid #e9ecef;
+  padding: 0.75rem 1rem;
+}
+
+.dns-config-form-control:focus,
+.form-control:focus {
+  border-color: var(--dns-config-primary-red);
+  box-shadow: 0 0 0 0.2rem var(--dns-config-shadow-color);
+}
+
+.dns-config-form-select,
 .form-select {
   border-radius: 8px;
   border: 2px solid #e9ecef;
   padding: 0.75rem 1rem;
 }
 
-.form-control:focus,
+.dns-config-form-select:focus,
 .form-select:focus {
-  border-color: var(--primary-red);
-  box-shadow: 0 0 0 0.2rem var(--shadow-color);
+  border-color: var(--dns-config-primary-red);
+  box-shadow: 0 0 0 0.2rem var(--dns-config-shadow-color);
 }
 
-.table-container {
+.dns-config-table-container {
   background: white;
   border-radius: 12px;
-  box-shadow: 0 4px 15px var(--shadow-color);
+  box-shadow: 0 4px 15px var(--dns-config-shadow-color);
   overflow: hidden;
 }
 
-.table th {
-  background: var(--pale-red);
-  color: var(--dark-red);
+.dns-config-table-container .table th {
+  background: var(--dns-config-pale-red);
+  color: var(--dns-config-dark-red);
   font-weight: 600;
   border: none;
   padding: 1rem;
 }
 
-.table td {
+.dns-config-table-container .table td {
   padding: 1rem;
   vertical-align: middle;
 }
 
-.record-type-badge {
-  background: var(--primary-red);
+.dns-config-record-type-badge {
+  background: var(--dns-config-primary-red);
   color: white;
   padding: 0.25rem 0.75rem;
   border-radius: 20px;
@@ -132,54 +164,58 @@
   font-weight: 600;
 }
 
-.status-active {
+.dns-config-status-active {
   color: #28a745;
   font-weight: 600;
 }
 
-.status-inactive {
-  color: var(--medium-gray);
+.dns-config-status-inactive {
+  color: var(--dns-config-medium-gray);
 }
 
+.dns-config-modal-header,
 .modal-header {
-  background: var(--pale-red);
-  border-bottom: 2px solid var(--primary-red);
+  background: var(--dns-config-pale-red);
+  border-bottom: 2px solid var(--dns-config-primary-red);
 }
 
-.domain-selector {
+.dns-config-domain-selector {
   background: white;
   border-radius: 12px;
-  box-shadow: 0 2px 10px var(--shadow-color);
+  box-shadow: 0 2px 10px var(--dns-config-shadow-color);
   padding: 1.5rem;
   margin-bottom: 2rem;
 }
 
-.filter-container {
+.dns-config-filter-container {
   background: white;
   border-radius: 12px;
-  box-shadow: 0 2px 10px var(--shadow-color);
+  box-shadow: 0 2px 10px var(--dns-config-shadow-color);
   padding: 1.5rem;
   margin-bottom: 1rem;
 }
 
-.pagination .page-link {
-  color: var(--primary-red);
-  border-color: var(--primary-red);
+.dns-config-pagination .page-link,
+.pagination .dns-config-page-link {
+  color: var(--dns-config-primary-red);
+  border-color: var(--dns-config-primary-red);
   border-radius: 6px !important;
   margin: 0 2px;
 }
 
-.pagination .page-link:hover {
-  background-color: var(--pale-red);
-  border-color: var(--primary-red);
+.dns-config-pagination .page-link:hover,
+.pagination .dns-config-page-link:hover {
+  background-color: var(--dns-config-pale-red);
+  border-color: var(--dns-config-primary-red);
 }
 
-.pagination .page-item.active .page-link {
-  background-color: var(--primary-red);
-  border-color: var(--primary-red);
+.dns-config-pagination .page-item.active .page-link,
+.pagination .page-item.active .dns-config-page-link {
+  background-color: var(--dns-config-primary-red);
+  border-color: var(--dns-config-primary-red);
 }
 
-.loading-overlay {
+.dns-config-loading-overlay {
   position: fixed;
   top: 0;
   left: 0;
@@ -192,11 +228,11 @@
   z-index: 9999;
 }
 
-.spinner-border-custom {
-  color: var(--primary-red);
+.dns-config-spinner-custom {
+  color: var(--dns-config-primary-red);
 }
 
-.error-alert {
+.dns-config-error-alert {
   position: fixed;
   top: 20px;
   right: 20px;
