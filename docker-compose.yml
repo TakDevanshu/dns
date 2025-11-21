@@ -29,7 +29,7 @@ services:
     build:
       context: ./frontend
     ports:
-      - "80:80" # Vite dev server port
+      - "8081:80" # Vite dev server port
     environment:
       VITE_BACKEND_URL: http://backend:5000
     depends_on:
