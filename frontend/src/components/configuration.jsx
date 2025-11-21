@@ -200,8 +200,7 @@ const Configuration = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   ];
 
   // API configuration
-  const API_BASE_URL =
-    import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
+  const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
   const getAuthToken = () => localStorage.getItem("authToken");
   const userId = localStorage.getItem("userId");
 

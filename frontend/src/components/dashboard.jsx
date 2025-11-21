@@ -49,8 +49,7 @@ const Dashboard = ({ onGoToConfig }) => {
   // small UI flags
   const [globalLoading, setGlobalLoading] = useState(false);
 
-  const API_BASE_URL =
-    import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
+  const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
 
   // Generic API call util used across the component
   const apiCall = useCallback(
