@@ -6,6 +6,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
+
+COPY .env .env
+COPY .env.production .env.production
+
 # Copy all frontend files
 COPY . .
 
