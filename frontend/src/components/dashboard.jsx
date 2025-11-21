@@ -1,234 +1,332 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./css/dashboard.css";
 
 const DEFAULT_NS_COUNT = 3;
 
+// Helper: get auth token & userId
+const getAuthToken = () => localStorage.getItem("authToken");
+const getLocalUserId = () => localStorage.getItem("userId");
+
 const Dashboard = ({ onGoToConfig }) => {
+  // domain list + selection
   const [domains, setDomains] = useState([]);
   const [selectedDomain, setSelectedDomain] = useState("");
+
+  // UI tabs
   const [tab, setTab] = useState("details");
+
+  // domain/zone details
   const [domainDetails, setDomainDetails] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [nameServers, setNameServers] = useState([]);
   const [zoneDetails, setZoneDetails] = useState(null);
 
-  // --- Activity/Audit Log State ---
+  // loading / errors (separate per area)
+  const [loadingDomains, setLoadingDomains] = useState(true);
+  const [domainError, setDomainError] = useState("");
+
+  // details loading
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [detailsError, setDetailsError] = useState("");
+
+  // audit/activity
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
 
-  // --- Team/Invitation State ---
+  // team & invites
   const [team, setTeam] = useState([]);
   const [teamLoading, setTeamLoading] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("viewer");
   const [teamError, setTeamError] = useState("");
+
   const [invites, setInvites] = useState([]);
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState("");
 
-  const userId = localStorage.getItem("userId");
+  // invite form
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("viewer");
+
+  // small UI flags
+  const [globalLoading, setGlobalLoading] = useState(false);
+
   const API_BASE_URL =
     import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
-  const getAuthToken = () => localStorage.getItem("authToken");
 
-  const apiCall = async (endpoint, options = {}) => {
-    try {
+  // Generic API call util used across the component
+  const apiCall = useCallback(
+    async (endpoint, options = {}) => {
       const token = getAuthToken();
       const headers = {
-        "Content-Type": "application/json",
-        ...(token && { Authorization: `Bearer ${token}` }),
-        ...options.headers,
+        ...(options.headers || {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       };
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      // Attach content-type automatically for bodies unless provided
+      if (options.body && !headers["Content-Type"]) {
+        headers["Content-Type"] = "application/json";
+      }
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
         ...options,
         headers,
       });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.message || `HTTP error! status: ${response.status}`
-        );
+      const contentType = res.headers.get("content-type") || "";
+      let data = {};
+      if (contentType.includes("application/json")) {
+        data = await res.json().catch(() => ({}));
+      } else {
+        const text = await res.text();
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          data = { message: text || `HTTP error! status: ${res.status}` };
+        }
       }
-      return await response.json();
-    } catch (error) {
-      setError(error.message);
-      throw error;
-    }
-  };
+      if (!res.ok) {
+        // normalize error
+        throw new Error(data?.message || `HTTP error! status: ${res.status}`);
+      }
+      return data;
+    },
+    [API_BASE_URL]
+  );
 
-  useEffect(() => {
-    const fetchDomains = async () => {
-      setLoading(true);
-      setError("");
-      try {
-        const resp = await apiCall(`/domains/user/${userId}`);
-        if (resp.success && resp.data.domains.length > 0) {
+  // FETCH DOMAINS (safe: use /domains/user/:id when local user id exists else /domains/me)
+  const fetchDomains = useCallback(async (signal) => {
+    setLoadingDomains(true);
+    setDomainError("");
+    try {
+      const localId = getLocalUserId();
+      const endpoint = localId ? `/domains/user/${localId}` : `/domains/me`;
+      const resp = await apiCall(endpoint);
+      if (!signal?.aborted) {
+        if (resp.success && resp.data?.domains?.length > 0) {
           setDomains(resp.data.domains);
-          setSelectedDomain(resp.data.domains[0].domain);
+          // only auto-select if nothing selected yet
+          setSelectedDomain((prev) => prev || resp.data.domains[0].domain);
         } else {
           setDomains([]);
           setSelectedDomain("");
         }
-      } catch (e) {}
-      setLoading(false);
-    };
-    fetchDomains();
-  }, []);
+      }
+    } catch (err) {
+      if (!signal?.aborted) {
+        setDomains([]);
+        setSelectedDomain("");
+        setDomainError(err.message || "Failed to fetch domains");
+      }
+    } finally {
+      if (!signal?.aborted) setLoadingDomains(false);
+    }
+  }, [apiCall]);
 
   useEffect(() => {
-    const fetchDomainDetails = async () => {
+    const controller = new AbortController();
+    fetchDomains(controller.signal);
+    return () => controller.abort();
+  }, [fetchDomains]);
+
+  // FETCH DOMAIN DETAILS (records/contacts)
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
       if (!selectedDomain) {
         setDomainDetails(null);
         return;
       }
-      setLoading(true);
-      setError("");
+      setLoadingDetails(true);
+      setDetailsError("");
       try {
         const resp = await apiCall(`/domains/${selectedDomain}`);
-        if (resp.success) {
-          setDomainDetails(resp.data);
-        } else {
-          setDomainDetails(null);
-        }
-      } catch (e) {
+        if (!mounted) return;
+        if (resp.success) setDomainDetails(resp.data);
+        else setDomainDetails(null);
+      } catch (err) {
+        if (!mounted) return;
         setDomainDetails(null);
+        setDetailsError(err.message || "Failed to fetch domain details");
+      } finally {
+        if (mounted) setLoadingDetails(false);
       }
-      setLoading(false);
     };
-    fetchDomainDetails();
-  }, [selectedDomain]);
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [selectedDomain, apiCall]);
 
+  // FETCH ZONE DETAILS (zone metadata, nameservers)
   useEffect(() => {
-    if (!selectedDomain) return;
-    const fetchZoneDetails = async () => {
+    let mounted = true;
+    const load = async () => {
+      if (!selectedDomain) {
+        setZoneDetails(null);
+        return;
+      }
       try {
         const resp = await apiCall(`/zones/${selectedDomain}`);
-        if (resp.success && resp.data) {
-          setZoneDetails(resp.data);
-        } else {
-          setZoneDetails(null);
-        }
-      } catch (e) {
+        if (!mounted) return;
+        if (resp.success && resp.data) setZoneDetails(resp.data);
+        else setZoneDetails(null);
+      } catch (err) {
+        if (!mounted) return;
         setZoneDetails(null);
       }
     };
-    fetchZoneDetails();
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [selectedDomain, apiCall]);
+
+  // Clear per-tab caches when domain changes to avoid showing old results
+  useEffect(() => {
+    setAuditLogs([]);
+    setTeam([]);
+    setInvites([]);
+    setAuditError("");
+    setTeamError("");
+    setInviteError("");
   }, [selectedDomain]);
 
+  // ACTIVITY / AUDIT LOGS (only fetch when user selects Activity tab)
   useEffect(() => {
-    if (tab === "activity" && selectedDomain) {
-      setAuditLoading(true);
-      setError("");
-      const fetchAuditLogs = async () => {
-        try {
-          const token = getAuthToken();
-          const resp = await fetch(
-            `${API_BASE_URL}/auditlog/${selectedDomain}`,
-            {
-              headers: {
-                "Content-Type": "application/json",
-                ...(token && { Authorization: `Bearer ${token}` }),
-              },
-            }
-          );
-          const data = await resp.json();
-          if (data.success) {
-            setAuditLogs(data.data);
-          } else {
-            setAuditLogs([]);
-            setError(data.message || "Failed to fetch audit logs");
-          }
-        } catch (e) {
-          setAuditLogs([]);
-          setError("Failed to fetch audit logs");
-        }
-        setAuditLoading(false);
-      };
-      fetchAuditLogs();
+    let mounted = true;
+    if (tab !== "activity" || !selectedDomain) {
+      return () => (mounted = false);
     }
-  }, [tab, selectedDomain]);
+    const load = async () => {
+      setAuditLoading(true);
+      setAuditError("");
+      try {
+        const data = await apiCall(`/auditlog/${selectedDomain}`);
+        if (!mounted) return;
+        if (data.success) setAuditLogs(data.data || []);
+        else {
+          setAuditLogs([]);
+          setAuditError(data.message || "Failed to fetch audit logs");
+        }
+      } catch (err) {
+        if (!mounted) return;
+        setAuditLogs([]);
+        setAuditError(err.message || "Failed to fetch audit logs");
+      } finally {
+        if (mounted) setAuditLoading(false);
+      }
+    };
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [tab, selectedDomain, apiCall]);
 
+  // TEAM (fetch only on team tab)
   useEffect(() => {
-    const fetchTeam = async () => {
-      if (tab !== "team" || !selectedDomain) return;
-
+    let mounted = true;
+    if (tab !== "team" || !selectedDomain) {
+      return () => (mounted = false);
+    }
+    const load = async () => {
       setTeamLoading(true);
       setTeamError("");
-
       try {
         const resp = await apiCall(`/team/${selectedDomain}`);
+        if (!mounted) return;
         if (resp.success && resp.data) {
-          console.log("Team:", resp.data);
+          // Expecting array of memberships with .User
           setTeam(resp.data);
         } else {
           setTeam([]);
         }
-      } catch (e) {
+      } catch (err) {
+        if (!mounted) return;
         setTeam([]);
-        setTeamError("Failed to fetch team data");
+        setTeamError(err.message || "Failed to fetch team data");
+      } finally {
+        if (mounted) setTeamLoading(false);
       }
-
-      setTeamLoading(false);
     };
+    load();
+    return () => (mounted = false);
+  }, [tab, selectedDomain, apiCall]);
 
-    fetchTeam();
-  }, [tab, selectedDomain]);
-
+  // INVITES (fetch only when invitations tab active)
   useEffect(() => {
-    const fetchInvites = async () => {
-      if (tab !== "invitations") return;
-
+    let mounted = true;
+    if (tab !== "invitations" || !selectedDomain) {
+      return () => (mounted = false);
+    }
+    const load = async () => {
       setInviteLoading(true);
       setInviteError("");
-
       try {
+        // the endpoint earlier used `/team/invites` (global). We keep same.
         const resp = await apiCall(`/team/invites`);
-        if (resp.success && resp.data) {
-          setInvites(resp.data);
-        } else {
-          setInvites([]);
-        }
-      } catch (e) {
+        if (!mounted) return;
+        if (resp.success && resp.data) setInvites(resp.data);
+        else setInvites([]);
+      } catch (err) {
+        if (!mounted) return;
         setInvites([]);
-        setInviteError("Failed to fetch invitations");
+        setInviteError(err.message || "Failed to fetch invitations");
+      } finally {
+        if (mounted) setInviteLoading(false);
       }
-
-      setInviteLoading(false);
     };
+    load();
+    return () => (mounted = false);
+  }, [tab, selectedDomain, apiCall]);
 
-    fetchInvites();
-  }, [tab]);
+  // CHECK OWNER - use zoneDetails.userId or domainDetails.ownerId where available
+  const localUserId = getLocalUserId();
+  const isOwner =
+    String(zoneDetails?.userId || domainDetails?.ownerId || "") ===
+    String(localUserId);
 
-  const handleRemove = async (userId) => {
+  // TEAM ACTIONS
+  const handleRemove = async (removeUserId) => {
     if (!window.confirm("Are you sure you want to remove this team member?"))
       return;
+    if (!selectedDomain) return;
+    // Prevent removing owner
+    if (String(removeUserId) === String(localUserId)) {
+      setTeamError("You cannot remove yourself via this action.");
+      return;
+    }
     try {
-      await apiCall(`/team/${selectedDomain}/${userId}`, { method: "DELETE" });
-      setTeam((team) => team.filter((m) => m.User?.id !== userId));
+      await apiCall(`/team/${selectedDomain}/${removeUserId}`, {
+        method: "DELETE",
+      });
+      // remove from local state by matching User.id where possible
+      setTeam((prev) => prev.filter((m) => m.User?.id !== removeUserId));
     } catch (err) {
       setTeamError(err.message || "Failed to remove member");
     }
   };
 
-  const handleChangeRole = async (userId, newRole) => {
+  const handleChangeRole = async (userIdToChange, newRole) => {
+    if (!selectedDomain) return;
+    // prevent role change to owner or invalid
     try {
-      await apiCall(`/team/${selectedDomain}/${userId}`, {
+      await apiCall(`/team/${selectedDomain}/${userIdToChange}`, {
         method: "PUT",
         body: JSON.stringify({ role: newRole }),
-        headers: { "Content-Type": "application/json" },
       });
-      setTeam((team) =>
-        team.map((m) => (m.User?.id === userId ? { ...m, role: newRole } : m))
+      setTeam((prev) =>
+        prev.map((m) =>
+          m.User?.id === userIdToChange ? { ...m, role: newRole } : m
+        )
       );
     } catch (err) {
       setTeamError(err.message || "Failed to change role");
     }
   };
 
+  // INVITE
   const handleInvite = async (e) => {
     e.preventDefault();
+    if (!selectedDomain) {
+      setTeamError("Please select a domain first.");
+      return;
+    }
     setTeamError("");
     try {
       await apiCall("/team/invite", {
@@ -239,64 +337,99 @@ const Dashboard = ({ onGoToConfig }) => {
           role: inviteRole,
         }),
       });
+      // reset and switch to team tab (will fetch team)
       setInviteEmail("");
       setInviteRole("viewer");
       setTab("team");
     } catch (err) {
-      setTeamError(err.message);
+      setTeamError(err.message || "Failed to send invite");
     }
   };
 
   const acceptInvite = async (domain) => {
     setInviteError("");
     try {
-      const resp = await fetch(`${API_BASE_URL}/team/accept`, {
+      const resp = await apiCall(`/team/accept`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${getAuthToken()}`,
-        },
         body: JSON.stringify({ domain }),
       });
-      const data = await resp.json();
-      if (data.success) {
+      if (resp.success) {
         setInvites((prev) => prev.filter((i) => i.domain !== domain));
       } else {
-        setInviteError(data.message || "Failed to accept invitation.");
+        setInviteError(resp.message || "Failed to accept invitation.");
       }
-    } catch (e) {
-      setInviteError("Failed to accept invitation.");
+    } catch (err) {
+      setInviteError(err.message || "Failed to accept invitation.");
     }
   };
 
+  // UTILS: safely render long JSON details truncated with tooltip
+  const renderTruncatedJson = (obj, maxChars = 800) => {
+    try {
+      const str = JSON.stringify(obj, null, 2);
+      const truncated = str.length > maxChars ? str.slice(0, maxChars) + "..." : str;
+      return <pre title={str} style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}>{truncated}</pre>;
+    } catch {
+      return <pre>{String(obj)}</pre>;
+    }
+  };
+
+  // Domain selector helper: refresh domains (exposed to UI if needed)
+  // const refreshDomains = async () => {
+  //   setGlobalLoading(true);
+  //   try {
+  //     await fetchDomains();
+  //   } catch {
+  //     // fetchDomains sets its own error
+  //   } finally {
+  //     setGlobalLoading(false);
+  //   }
+  // };
+
+  // render
   return (
     <div className="dnsdb-wrapper">
       <div className="dnsdb-header">
         <h2 className="dnsdb-title">DNS Dashboard</h2>
       </div>
 
-      {loading && <div className="dnsdb-loading-message">Loading...</div>}
-      {error && <div className="alert alert-danger">{error}</div>}
+      {/* Top-level global loading + domain error */}
+      {(loadingDomains || globalLoading) && (
+        <div className="dnsdb-loading-message">Loading domains...</div>
+      )}
+      {domainError && <div className="alert alert-danger">{domainError}</div>}
 
       <div className="dnsdb-domain-selector-container">
         <label htmlFor="domainSelect" className="dnsdb-form-label">
           Select Domain:
         </label>
-        <select
-          id="domainSelect"
-          className="dnsdb-form-select"
-          value={selectedDomain || ""}
-          onChange={(e) => setSelectedDomain(e.target.value)}
-        >
-          {domains.map((d) => (
-            <option key={d.domain} value={d.domain}>
-              {d.domain}
-              {d.owner && d.owner.merchant_name
-                ? ` (Owner: ${d.owner.merchant_name})`
-                : ""}
-            </option>
-          ))}
-        </select>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select
+            id="domainSelect"
+            className="dnsdb-form-select"
+            value={selectedDomain || ""}
+            onChange={(e) => setSelectedDomain(e.target.value)}
+            style={{ minWidth: 320 }}
+          >
+            {domains.map((d) => (
+              <option key={d.domain} value={d.domain}>
+                {d.domain}
+                {d.owner && d.owner.merchant_name
+                  ? ` (Owner: ${d.owner.merchant_name})`
+                  : ""}
+              </option>
+            ))}
+          </select>
+
+          {/* <button
+            className="btn btn-outline-primary"
+            onClick={() => refreshDomains()}
+            title="Refresh domains"
+          >
+            Refresh
+          </button> */}
+        </div>
       </div>
 
       <div className="dnsdb-layout-container">
@@ -304,49 +437,37 @@ const Dashboard = ({ onGoToConfig }) => {
         <aside className="dnsdb-sidebar">
           <nav className="dnsdb-nav">
             <button
-              className={`dnsdb-nav-link ${
-                tab === "details" ? "dnsdb-nav-link--active" : ""
-              }`}
+              className={`dnsdb-nav-link ${tab === "details" ? "dnsdb-nav-link--active" : ""}`}
               onClick={() => setTab("details")}
             >
               Details
             </button>
             <button
-              className={`dnsdb-nav-link ${
-                tab === "contacts" ? "dnsdb-nav-link--active" : ""
-              }`}
+              className={`dnsdb-nav-link ${tab === "contacts" ? "dnsdb-nav-link--active" : ""}`}
               onClick={() => setTab("contacts")}
             >
               Contacts
             </button>
             <button
-              className={`dnsdb-nav-link ${
-                tab === "nameservers" ? "dnsdb-nav-link--active" : ""
-              }`}
+              className={`dnsdb-nav-link ${tab === "nameservers" ? "dnsdb-nav-link--active" : ""}`}
               onClick={() => setTab("nameservers")}
             >
               Name Servers
             </button>
             <button
-              className={`dnsdb-nav-link ${
-                tab === "activity" ? "dnsdb-nav-link--active" : ""
-              }`}
+              className={`dnsdb-nav-link ${tab === "activity" ? "dnsdb-nav-link--active" : ""}`}
               onClick={() => setTab("activity")}
             >
               Activity
             </button>
             <button
-              className={`dnsdb-nav-link ${
-                tab === "team" ? "dnsdb-nav-link--active" : ""
-              }`}
+              className={`dnsdb-nav-link ${tab === "team" ? "dnsdb-nav-link--active" : ""}`}
               onClick={() => setTab("team")}
             >
               Team
             </button>
             <button
-              className={`dnsdb-nav-link ${
-                tab === "invitations" ? "dnsdb-nav-link--active" : ""
-              }`}
+              className={`dnsdb-nav-link ${tab === "invitations" ? "dnsdb-nav-link--active" : ""}`}
               onClick={() => setTab("invitations")}
             >
               Invitations
@@ -354,117 +475,74 @@ const Dashboard = ({ onGoToConfig }) => {
           </nav>
         </aside>
 
-        {/* Main content area */}
+        {/* Main content */}
         <main className="dnsdb-content">
           <div className="dnsdb-card">
             <div className="dnsdb-card-body">
-              {tab === "details" &&
-                (zoneDetails ? (
-                  <div>
-                    <p>
-                      <strong>Domain Name:</strong> {zoneDetails.domain}
-                    </p>
-                    <p>
-                      <strong>Domain Created On:</strong>{" "}
-                      {zoneDetails.createdAt
-                        ? new Date(zoneDetails.createdAt).toLocaleString()
-                        : "N/A"}
-                    </p>
-                    <p>
-                      <strong>Domain Status:</strong> {zoneDetails.status}
-                    </p>
-                    <p>
-                      <strong>Registrar Name:</strong>{" "}
-                      {zoneDetails.registrarName}
-                    </p>
-                    <p>
-                      <strong>Name Servers:</strong>{" "}
-                      {zoneDetails.nameServers
-                        ? zoneDetails.nameServers.join(", ")
-                        : "N/A"}
-                    </p>
-                  </div>
-                ) : (
-                  <div>No details available.</div>
-                ))}
+              {/* DETAILS */}
+              {tab === "details" && (
+                <>
+                  {loadingDetails ? (
+                    <div className="dnsdb-loading-message">Loading details...</div>
+                  ) : detailsError ? (
+                    <div className="alert alert-danger">{detailsError}</div>
+                  ) : zoneDetails ? (
+                    <div>
+                      <p><strong>Domain Name:</strong> {zoneDetails.domain}</p>
+                      <p>
+                        <strong>Domain Created On:</strong>{" "}
+                        {zoneDetails.createdAt ? new Date(zoneDetails.createdAt).toLocaleString() : "N/A"}
+                      </p>
+                      <p><strong>Domain Status:</strong> {zoneDetails.status}</p>
+                      <p><strong>Registrar Name:</strong> {zoneDetails.registrarName || "N/A"}</p>
+                      <p>
+                        <strong>Name Servers:</strong>{" "}
+                        {zoneDetails.nameServers?.length ? zoneDetails.nameServers.join(", ") : "N/A"}
+                      </p>
+                    </div>
+                  ) : (
+                    <div>No details available.</div>
+                  )}
+                </>
+              )}
 
-              {tab === "contacts" &&
-                (domainDetails && domainDetails.contacts ? (
-                  <div>
-                    <p>
-                      <strong>First Name:</strong>{" "}
-                      {domainDetails.contacts.firstName || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Last Name:</strong>{" "}
-                      {domainDetails.contacts.lastName || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Organization Name:</strong>{" "}
-                      {domainDetails.contacts.organizationName || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Email:</strong>{" "}
-                      {domainDetails.contacts.email || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Phone Number:</strong>{" "}
-                      {domainDetails.contacts.phoneNumber || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Fax Number:</strong>{" "}
-                      {domainDetails.contacts.faxNumber || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Address 1:</strong>{" "}
-                      {domainDetails.contacts.address1 || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Address 2:</strong>{" "}
-                      {domainDetails.contacts.address2 || "N/A"}
-                    </p>
-                    <p>
-                      <strong>City:</strong>{" "}
-                      {domainDetails.contacts.city || "N/A"}
-                    </p>
-                    <p>
-                      <strong>State:</strong>{" "}
-                      {domainDetails.contacts.state || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Zip/Postal Code:</strong>{" "}
-                      {domainDetails.contacts.zipCode || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Country:</strong>{" "}
-                      {domainDetails.contacts.country || "N/A"}
-                    </p>
-                  </div>
-                ) : (
-                  <div>No contact info available.</div>
-                ))}
+              {/* CONTACTS */}
+              {tab === "contacts" && (
+                <>
+                  {loadingDetails ? (
+                    <div className="dnsdb-loading-message">Loading contact info...</div>
+                  ) : domainDetails?.contacts ? (
+                    <div>
+                      <p><strong>First Name:</strong> {domainDetails.contacts.firstName || "N/A"}</p>
+                      <p><strong>Last Name:</strong> {domainDetails.contacts.lastName || "N/A"}</p>
+                      <p><strong>Organization Name:</strong> {domainDetails.contacts.organizationName || "N/A"}</p>
+                      <p><strong>Email:</strong> {domainDetails.contacts.email || "N/A"}</p>
+                      <p><strong>Phone Number:</strong> {domainDetails.contacts.phoneNumber || "N/A"}</p>
+                      <p><strong>Fax Number:</strong> {domainDetails.contacts.faxNumber || "N/A"}</p>
+                      <p><strong>Address 1:</strong> {domainDetails.contacts.address1 || "N/A"}</p>
+                      <p><strong>Address 2:</strong> {domainDetails.contacts.address2 || "N/A"}</p>
+                      <p><strong>City:</strong> {domainDetails.contacts.city || "N/A"}</p>
+                      <p><strong>State:</strong> {domainDetails.contacts.state || "N/A"}</p>
+                      <p><strong>Zip/Postal Code:</strong> {domainDetails.contacts.zipCode || "N/A"}</p>
+                      <p><strong>Country:</strong> {domainDetails.contacts.country || "N/A"}</p>
+                    </div>
+                  ) : (
+                    <div>No contact info available.</div>
+                  )}
+                </>
+              )}
 
+              {/* NAMESERVERS */}
               {tab === "nameservers" && (
                 <div>
                   <div className="dnsdb-section-title">Name Servers</div>
                   <ul>
-                    {zoneDetails &&
-                    zoneDetails.nameServers &&
-                    zoneDetails.nameServers.length > 0 ? (
+                    {zoneDetails?.nameServers?.length > 0 ? (
                       zoneDetails.nameServers.slice(0, DEFAULT_NS_COUNT).map((ns, idx) => (
-                        <li key={idx}>
-                          {ns}
-                        </li>
+                        <li key={idx}>{ns}</li>
                       ))
                     ) : (
-                      <li
-                        style={{
-                          borderLeft: "4px solid var(--dnsdb-medium-gray)",
-                          background: "var(--dnsdb-light-gray)",
-                          color: "var(--dnsdb-medium-gray)",
-                          fontStyle: "italic",
-                        }}
-                      >
+                      <li style={{ borderLeft: "4px solid var(--dns-border-light)", background: "var(--dns-bg)", color: "var(--dns-gray)", fontStyle: "italic", padding: "0.5rem 0.75rem" }}>
                         No name servers found.
                       </li>
                     )}
@@ -472,23 +550,20 @@ const Dashboard = ({ onGoToConfig }) => {
                 </div>
               )}
 
+              {/* ACTIVITY */}
               {tab === "activity" && (
                 <div>
                   <h5 className="dnsdb-section-title">Activity History</h5>
                   {auditLoading ? (
-                    <div className="dnsdb-loading-message">
-                      Loading activity...
-                    </div>
-                  ) : error ? (
-                    <div className="alert alert-danger">{error}</div>
+                    <div className="dnsdb-loading-message">Loading activity...</div>
+                  ) : auditError ? (
+                    <div className="alert alert-danger">{auditError}</div>
                   ) : auditLogs.length === 0 ? (
-                    <div className="dnsdb-empty-state">
-                      No activity found for this domain.
-                    </div>
+                    <div className="dnsdb-empty-state">No activity found for this domain.</div>
                   ) : (
                     <div className="dnsdb-activity-table-container">
                       <table className="dnsdb-activity-table">
-                        <thead className="dnsdb-activity-table-header">
+                        <thead>
                           <tr>
                             <th>When</th>
                             <th>User ID</th>
@@ -497,47 +572,14 @@ const Dashboard = ({ onGoToConfig }) => {
                             <th>Details</th>
                           </tr>
                         </thead>
-                        <tbody className="dnsdb-activity-table-body">
+                        <tbody>
                           {auditLogs.map((log) => (
-                            <tr
-                              key={log.id}
-                              className="dnsdb-activity-table-row"
-                              data-action={log.action}
-                            >
-                              <td
-                                className="dnsdb-activity-table-cell dnsdb-activity-time"
-                                data-label="When"
-                              >
-                                {log.timestamp
-                                  ? new Date(log.timestamp).toLocaleString()
-                                  : ""}
-                              </td>
-                              <td
-                                className="dnsdb-activity-table-cell dnsdb-activity-user"
-                                data-label="User ID"
-                              >
-                                {log.userId}
-                              </td>
-                              <td
-                                className="dnsdb-activity-table-cell dnsdb-activity-action"
-                                data-label="Action"
-                              >
-                                {log.action}
-                              </td>
-                              <td
-                                className="dnsdb-activity-table-cell dnsdb-activity-entity"
-                                data-label="Entity"
-                              >
-                                {log.entityType}
-                              </td>
-                              <td
-                                className="dnsdb-activity-table-cell dnsdb-activity-details"
-                                data-label="Details"
-                              >
-                                <pre className="dnsdb-activity-details-code">
-                                  {JSON.stringify(log.details, null, 2)}
-                                </pre>
-                              </td>
+                            <tr key={log.id || `${log.timestamp}-${log.userId}`}>
+                              <td>{log.timestamp ? new Date(log.timestamp).toLocaleString() : ""}</td>
+                              <td>{log.userId}</td>
+                              <td>{log.action}</td>
+                              <td>{log.entityType}</td>
+                              <td>{renderTruncatedJson(log.details)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -547,6 +589,7 @@ const Dashboard = ({ onGoToConfig }) => {
                 </div>
               )}
 
+              {/* TEAM */}
               {tab === "team" && (
                 <div>
                   <h5>Team Members</h5>
@@ -565,51 +608,49 @@ const Dashboard = ({ onGoToConfig }) => {
                           </tr>
                         </thead>
                         <tbody>
-                          {team.map((member) => (
-                            <tr key={member.id}>
-                              <td>{member.User?.email}</td>
-                              <td>{member.User?.merchant_name}</td>
-                              <td>
-                                {member.isOwner ? (
-                                  <span className="badge bg-primary">
-                                    Owner
-                                  </span>
-                                ) : (
-                                  <select
-                                    value={member.role}
-                                    onChange={(e) =>
-                                      handleChangeRole(
-                                        member.User.id,
-                                        e.target.value
-                                      )
-                                    }
-                                    className="form-select form-select-sm"
-                                    style={{
-                                      width: 110,
-                                      display: "inline-block",
-                                    }}
-                                  >
-                                    <option value="viewer">Viewer</option>
-                                    <option value="editor">Editor</option>
-                                    <option value="admin">Admin</option>
-                                  </select>
-                                )}
-                              </td>
-                              <td>{member.status}</td>
-                              <td>
-                                {!member.isOwner && (
-                                  <button
-                                    className="btn btn-outline-danger btn-sm"
-                                    onClick={() => handleRemove(member.User.id)}
-                                  >
-                                    Remove
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
+                          {team.map((member) => {
+                            const userIdKey = member.User?.id ?? member.id ?? Math.random();
+                            return (
+                              <tr key={userIdKey}>
+                                <td>{member.User?.email ?? "—"}</td>
+                                <td>{member.User?.merchant_name ?? "—"}</td>
+                                <td>
+                                  {member.isOwner ? (
+                                    <span className="badge bg-primary">Owner</span>
+                                  ) : (
+                                    <select
+                                      value={member.role}
+                                      onChange={(e) => handleChangeRole(member.User.id, e.target.value)}
+                                      className="form-select form-select-sm"
+                                      style={{ width: 120, display: "inline-block" }}
+                                      disabled={!isOwner}
+                                      title={!isOwner ? "Only domain owner can change roles" : ""}
+                                    >
+                                      <option value="viewer">Viewer</option>
+                                      <option value="editor">Editor</option>
+                                      <option value="admin">Admin</option>
+                                    </select>
+                                  )}
+                                </td>
+                                <td>{member.status ?? "active"}</td>
+                                <td>
+                                  {!member.isOwner && (
+                                    <button
+                                      className="btn btn-outline-danger btn-sm"
+                                      onClick={() => handleRemove(member.User.id)}
+                                      disabled={!isOwner}
+                                      title={!isOwner ? "Only domain owner can remove members" : ""}
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
+
                       <form onSubmit={handleInvite} className="mb-3">
                         <input
                           type="email"
@@ -628,18 +669,18 @@ const Dashboard = ({ onGoToConfig }) => {
                           <option value="editor">Editor</option>
                           <option value="admin">Admin</option>
                         </select>
-                        <button className="btn btn-primary" type="submit">
+                        <button className="btn btn-primary" type="submit" disabled={!isOwner}>
                           Invite
                         </button>
                       </form>
-                      {teamError && (
-                        <div className="alert alert-danger">{teamError}</div>
-                      )}
+
+                      {teamError && <div className="alert alert-danger">{teamError}</div>}
                     </>
                   )}
                 </div>
               )}
 
+              {/* INVITATIONS */}
               {tab === "invitations" && (
                 <div>
                   <h5 className="dnsdb-card-title mb-3">Pending Invitations</h5>
@@ -652,26 +693,16 @@ const Dashboard = ({ onGoToConfig }) => {
                   ) : (
                     <ul className="list-group">
                       {invites.map((invite) => (
-                        <li
-                          className="list-group-item d-flex justify-content-between align-items-center"
-                          key={invite.id}
-                        >
+                        <li className="list-group-item d-flex justify-content-between align-items-center" key={invite.id}>
                           <span>
-                            <b>{invite.domain}</b> &mdash; Role:{" "}
-                            <b>{invite.role}</b>
+                            <b>{invite.domain}</b> — Role: <b>{invite.role}</b>
                             {invite.Inviter && (
                               <span className="ms-2 text-muted">
-                                (Invited by:{" "}
-                                {invite.Inviter.merchant_name ||
-                                  invite.Inviter.email}
-                                )
+                                (Invited by: {invite.Inviter.merchant_name || invite.Inviter.email})
                               </span>
                             )}
                           </span>
-                          <button
-                            className="btn btn-outline-success btn-sm"
-                            onClick={() => acceptInvite(invite.domain)}
-                          >
+                          <button className="btn btn-outline-success btn-sm" onClick={() => acceptInvite(invite.domain)}>
                             Accept
                           </button>
                         </li>
@@ -685,11 +716,8 @@ const Dashboard = ({ onGoToConfig }) => {
         </main>
       </div>
 
-      <div className="dnsdb-footer">
-        <button
-          className="btn btn-primary"
-          onClick={() => onGoToConfig(selectedDomain)}
-        >
+      <div className="dnsdb-footer" style={{ marginTop: 16 }}>
+        <button className="btn btn-primary" onClick={() => onGoToConfig(selectedDomain)}>
           Go to DNS Configuration
         </button>
       </div>

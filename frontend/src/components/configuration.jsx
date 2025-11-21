@@ -1,64 +1,100 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./css/configuration.css";
 
-// Helper to parse value for complex records
+// Helper validators
+const isValidIPv4 = (ip) =>
+  /^(25[0-5]|2[0-4]\d|1?\d{1,2})(\.(25[0-5]|2[0-4]\d|1?\d{1,2})){3}$/.test(
+    String(ip)
+  );
+// NOTE: current IPv6 regex requires full 8 groups - works but does not accept compressed notation.
+// If you want compressed IPv6 support later, replace with a more complete validator.
+const isValidIPv6 = (ip) =>
+  /^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$/i.test(String(ip));
+const isValidFQDN = (d) =>
+  typeof d === "string" &&
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/i.test(
+    d
+  );
+const isValidEmail = (e) =>
+  typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e));
+
+// Helper to parse value for complex records - prefer explicit fields if present
 function parseRecordValue(record) {
-  if (!record || !record.value) return record;
+  if (!record) return record || {};
+  // If backend already supplies SRV fields separately, use them
   if (record.type === "SRV") {
-    const [priority, weight, port, ...targetArr] = record.value.split(" ");
     return {
       ...record,
-      priority,
-      weight,
-      port,
-      target: targetArr.join(" "),
-      displayValue: `${targetArr.join(
-        " "
-      )}:${port} (prio ${priority}, weight ${weight})`,
+      priority:
+        record.priority ??
+        (() => {
+          const [p] = (record.value || "").split(" ");
+          return p || "";
+        })(),
+      weight:
+        record.weight ??
+        (() => {
+          const [, w] = (record.value || "").split(" ");
+          return w || "";
+        })(),
+      port:
+        record.port ??
+        (() => {
+          const [, , pr] = (record.value || "").split(" ");
+          return pr || "";
+        })(),
+      target:
+        record.target ??
+        (() => {
+          const parts = (record.value || "").split(" ");
+          return parts.slice(3).join(" ") || "";
+        })(),
     };
   }
   if (record.type === "SOA") {
-    const [primary, admin, serial, refresh, retry, expire, minimum] =
-      record.value.split(" ");
+    // backend may provide primary/admin/serial/... separately
+    if (record.primary && record.admin) return { ...record };
+    const parts = (record.value || "").split(" ");
     return {
       ...record,
-      primary,
-      admin,
-      serial,
-      refresh,
-      retry,
-      expire,
-      minimum,
-      displayValue: `Primary: ${primary}, Admin: ${admin}, Serial: ${serial}`,
+      primary: record.primary ?? parts[0] ?? "",
+      admin: record.admin ?? parts[1] ?? "",
+      serial: record.serial ?? parts[2] ?? "",
+      refresh: record.refresh ?? parts[3] ?? "",
+      retry: record.retry ?? parts[4] ?? "",
+      expire: record.expire ?? parts[5] ?? "",
+      minimum: record.minimum ?? parts[6] ?? "",
     };
   }
   if (record.type === "CAA") {
-    const [flags, tag, ...valueArr] = record.value.split(" ");
+    if (record.flags && record.tag) return { ...record };
+    const [flags, tag, ...rest] = (record.value || "").split(" ");
+    // keep both `value` and `caaValue` to remain compatible with UI & payload builders
+    const caaVal = rest.join(" ");
     return {
       ...record,
-      flags,
-      tag,
-      caaValue: valueArr.join(" "),
-      displayValue: `flags: ${flags}, tag: ${tag}, value: ${valueArr.join(
-        " "
-      )}`,
+      flags: flags ?? "",
+      tag: tag ?? "",
+      value: caaVal,
+      caaValue: caaVal,
     };
   }
-  // Default for other types
-  return { ...record, displayValue: record.value };
+  // default
+  return { ...record };
 }
 
-// Add this helper function above your component or inside it
+// Build payload for create/update. Use current domain (selectedDomain param) and include fields expected by backend.
 function buildPayload(formData, userId, selectedDomain) {
   const base = {
     domain: selectedDomain,
     type: formData.type,
-    name: formData.name,
-    ttl: Number(formData.ttl),
+    name: formData.name || "@",
+    ttl: Number(formData.ttl) || 3600,
     userId,
     comment: formData.comment || "",
   };
+
   switch (formData.type) {
     case "A":
     case "AAAA":
@@ -104,7 +140,7 @@ function buildPayload(formData, userId, selectedDomain) {
   }
 }
 
-const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
+const Configuration = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   const [domain, setDomain] = useState(selectedDomain || "");
   const [userDomains, setUserDomains] = useState([]);
   const [showAddDomainModal, setShowAddDomainModal] = useState(false);
@@ -123,14 +159,16 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
     name: "",
     isActive: "",
   });
+  const [loadingRecords, setLoadingRecords] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   // Form data for new/edit record
   const [formData, setFormData] = useState({
     domain: "",
-    type: "",
+    type: "A",
     name: "",
     value: "",
-    ttl: "",
+    ttl: 3600,
     priority: "",
     weight: "",
     port: "",
@@ -145,6 +183,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
     flags: "",
     tag: "",
     comment: "",
+    id: undefined,
   });
 
   const recordTypes = [
@@ -161,7 +200,8 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   ];
 
   // API configuration
-  const API_BASE_URL = import.meta.env.VITE_BACKEND_URL;
+  const API_BASE_URL =
+    import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
   const getAuthToken = () => localStorage.getItem("authToken");
   const userId = localStorage.getItem("userId");
 
@@ -170,24 +210,37 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
     try {
       const token = getAuthToken();
       const headers = {
-        "Content-Type": "application/json",
-        ...(token && { Authorization: `Bearer ${token}` }),
-        ...options.headers,
+        ...(options.headers || {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       };
+      // default JSON header for body-present requests
+      if (options.body && !headers["Content-Type"])
+        headers["Content-Type"] = "application/json";
 
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
         ...options,
         headers,
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.message || `HTTP error! status: ${response.status}`
-        );
+      const contentType = response.headers.get("content-type") || "";
+      let data;
+      if (contentType.includes("application/json")) {
+        data = await response.json().catch(() => ({}));
+      } else {
+        const text = await response.text();
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          data = { message: text || `HTTP error! status: ${response.status}` };
+        }
       }
 
-      return await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data?.message || `HTTP error! status: ${response.status}`
+        );
+      }
+      return data;
     } catch (error) {
       console.error("API call error:", error);
       setError(error.message);
@@ -195,8 +248,13 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
     }
   };
 
+  // avoid race conditions: track latest fetch id
+  const latestFetchId = useRef(0);
+
   const fetchRecords = async () => {
-    setLoading(true);
+    if (!domain) return;
+    const fetchId = ++latestFetchId.current;
+    setLoadingRecords(true);
     setError("");
     try {
       const queryParams = new URLSearchParams({
@@ -207,44 +265,33 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
         ...(filters.isActive && { isActive: filters.isActive }),
       });
 
-      const response = await apiCall(`/domains/${domain}?${queryParams}`);
-      console.log(response, "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+      const response = await apiCall(
+        `/domains/${domain}?${queryParams.toString()}`
+      );
+      // if a newer fetch was started, ignore this response
+      if (fetchId !== latestFetchId.current) return;
       if (response.success) {
-        setRecords(response.data.records);
-        setTotalPages(response.data.pagination.pages);
+        setRecords(response.data.records || []);
+        setTotalPages(
+          response.data.pagination ? response.data.pagination.pages : 1
+        );
+      } else {
+        setRecords([]);
+        setTotalPages(1);
       }
     } catch (error) {
       console.error("Error fetching records:", error);
-      // Set empty records if error occurs
       setRecords([]);
       setTotalPages(1);
+    } finally {
+      if (fetchId === latestFetchId.current) setLoadingRecords(false);
     }
-    setLoading(false);
   };
 
-  const handleAddDomain = async () => {
-    if (!newDomain.trim()) {
-      setError("Please enter a domain name.");
-      return;
-    }
-    setAddDomainLoading(true);
-    setError("");
-    setDomain(newDomain.trim());
-    setFormData({
-      domain: newDomain.trim(),
-      type: "A",
-      name: "",
-      value: "",
-      ttl: 3600,
-      priority: "",
-      comment: "",
-    });
-    setEditingRecord(null);
-    setShowAddDomainModal(false);
-    setNewDomain("");
-    setShowModal(true);
-    setAddDomainLoading(false);
-  };
+  // Reset page when domain or filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [domain, filters]);
 
   // Fetch user domains and set default domain
   const fetchUserDomains = async () => {
@@ -254,8 +301,11 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
       const response = await apiCall(`/domains/user/${userId}`);
       if (response.success && response.data.domains) {
         setUserDomains(response.data.domains);
-        // Fix: Use .domain for default selection
-        if (!response.data.domains.find((d) => d.domain === domain)) {
+        // Use existing domain if present; otherwise set the first returned domain
+        if (!domain) {
+          setDomain(response.data.domains[0]?.domain || "");
+        } else if (!response.data.domains.find((d) => d.domain === domain)) {
+          // If current domain is not in returned list, replace with first available domain
           setDomain(response.data.domains[0]?.domain || "");
         }
       } else {
@@ -287,20 +337,81 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
     }
   };
 
+  const handleAddDomain = async () => {
+    if (!newDomain.trim()) {
+      setError("Please enter a domain name.");
+      return;
+    }
+    setAddDomainLoading(true);
+    setError("");
+    // Prefer to actually create domain/zone on backend if API exists
+    try {
+      // try create domain via API if endpoint exists, fallback to client-only behavior
+      try {
+        const resp = await apiCall("/domains/create-zone", {
+          method: "POST",
+          body: JSON.stringify({ domain: newDomain.trim() }),
+        });
+        if (resp.success) {
+          await fetchUserDomains();
+          setDomain(newDomain.trim());
+        } else {
+          // fallback
+          setDomain(newDomain.trim());
+        }
+      } catch {
+        // fallback: set domain locally (existing behavior)
+        setDomain(newDomain.trim());
+      }
+
+      setFormData((prev) => ({
+        ...prev,
+        domain: newDomain.trim(),
+        type: "A",
+        name: "",
+        value: "",
+        ttl: 3600,
+        priority: "",
+        comment: "",
+        id: undefined,
+      }));
+      setEditingRecord(null);
+      setShowAddDomainModal(false);
+      setNewDomain("");
+      setShowModal(true);
+    } finally {
+      setAddDomainLoading(false);
+    }
+  };
+
+  // handleSubmit updated: uses PUT when editing (formData.id)
   const handleSubmit = async () => {
     setError("");
-    // Validation for required fields
-    if (!formData.name) {
+    // name required except SOA can use @ as name - enforce presence for non-SOA
+    if (!formData.name && formData.type !== "SOA") {
       setError("Record name is required");
       return;
     }
 
+    // TTL validation
+    if (
+      !Number.isInteger(Number(formData.ttl)) ||
+      Number(formData.ttl) < 60 ||
+      Number(formData.ttl) > 86400
+    ) {
+      setError("TTL must be an integer between 60 and 86400 seconds");
+      return;
+    }
+
+    // Type-specific validations
     if (formData.type === "SRV") {
       const { priority, weight, port, target } = formData;
-      if (!priority || !weight || !port || !target) {
-        setError(
-          "All SRV fields (priority, weight, port, target) are required"
-        );
+      if ([priority, weight, port].some((v) => v === "" || isNaN(Number(v)))) {
+        setError("SRV priority/weight/port must be numbers");
+        return;
+      }
+      if (!target || !isValidFQDN(target)) {
+        setError("SRV target must be a valid hostname");
         return;
       }
     } else if (formData.type === "SOA") {
@@ -309,84 +420,122 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
       if (
         !primary ||
         !admin ||
-        !serial ||
-        !refresh ||
-        !retry ||
-        !expire ||
-        !minimum
+        [serial, refresh, retry, expire, minimum].some(
+          (v) => v === "" || isNaN(Number(v))
+        )
       ) {
-        setError("All SOA fields are required");
+        setError(
+          "All SOA fields are required and numeric fields must be numbers"
+        );
+        return;
+      }
+      if (!isValidFQDN(primary)) {
+        setError("SOA primary must be a valid hostname");
+        return;
+      }
+      if (!isValidEmail(admin)) {
+        setError("SOA admin must be a valid email");
         return;
       }
     } else if (formData.type === "CAA") {
       const { flags, tag, value } = formData;
-      if (!flags || !tag || !value) {
+      if (flags === "" || tag === "" || value === "") {
         setError("All CAA fields (flags, tag, value) are required");
         return;
       }
-    } else if (!formData.value) {
-      setError("Record value is required");
-      return;
+      if (isNaN(Number(flags)) || Number(flags) < 0 || Number(flags) > 255) {
+        setError("CAA flags must be a number between 0 and 255");
+        return;
+      }
+    } else if (formData.type === "MX") {
+      if (!formData.value || !isValidFQDN(formData.value)) {
+        setError("MX mail server must be a valid hostname");
+        return;
+      }
+      if (formData.priority === "" || isNaN(Number(formData.priority))) {
+        setError("MX priority is required and must be a number");
+        return;
+      }
+    } else if (formData.type === "A") {
+      if (!isValidIPv4(formData.value)) {
+        setError("A record requires a valid IPv4 address");
+        return;
+      }
+    } else if (formData.type === "AAAA") {
+      if (!isValidIPv6(formData.value)) {
+        setError("AAAA record requires a valid IPv6 address");
+        return;
+      }
+    } else if (["CNAME", "NS", "PTR"].includes(formData.type)) {
+      if (!isValidFQDN(formData.value)) {
+        setError(`${formData.type} value must be a valid hostname`);
+        return;
+      }
+    } else {
+      if (!formData.value && !["SOA", "SRV", "CAA"].includes(formData.type)) {
+        setError("Record value is required");
+        return;
+      }
     }
 
-    // Validate priority for MX and SRV records
-    if (
-      ["MX", "SRV"].includes(formData.type) &&
-      (!formData.priority || formData.priority < 0 || formData.priority > 65535)
-    ) {
-      setError("Valid priority (0–65535) required for MX/SRV records");
-      return;
-    }
+    setActionLoading(true);
 
-    setLoading(true);
-    setError("");
-
-    // Build the payload
-    const payload = buildPayload(formData, userId, selectedDomain);
+    // Build payload using current domain state (not selectedDomain prop)
+    const payload = buildPayload(formData, userId, domain);
 
     try {
-      const response = await apiCall("/domains/create", {
-        method: "POST",
-        body: JSON.stringify(payload),
-        headers: { "Content-Type": "application/json" },
-      });
+      let response;
+      if (formData.id) {
+        // update existing record
+        response = await apiCall(`/domains/${formData.id}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        // create new
+        response = await apiCall("/domains/create", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+
       if (!response.success) {
         setError(response.message || "Failed to save record");
         return;
       }
 
       setShowModal(false);
+      setError("");
       resetForm();
       await fetchRecords();
       await fetchStats();
-    } catch (error) {
-      setError(error.message || "Failed to save record");
+    } catch (err) {
+      setError(err.message || "Failed to save record");
+    } finally {
+      setActionLoading(false);
     }
-    setLoading(false);
   };
 
   const handleDelete = async (id) => {
     if (!window.confirm("Are you sure you want to delete this record?")) return;
 
-    setLoading(true);
+    setActionLoading(true);
     setError("");
     try {
       const response = await apiCall(`/domains/${id}`, { method: "DELETE" });
       if (response.success) {
+        // simply refetch records & stats
         await fetchRecords();
         await fetchStats();
-        const recordsResp = await apiCall(`/domains/${domain}?limit=1`);
-        if (recordsResp.success && recordsResp.data.records.length === 0) {
-          await fetchUserDomains();
-        }
       }
     } catch (error) {
       console.error("Error deleting record:", error);
+    } finally {
+      setActionLoading(false);
     }
-    setLoading(false);
   };
 
-  // Reset form should clear all fields
+  // Reset form should clear all fields and editing id
   const resetForm = () => {
     setFormData({
       domain: "",
@@ -408,23 +557,51 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
       flags: "",
       tag: "",
       comment: "",
+      id: undefined,
     });
     setEditingRecord(null);
+    setError("");
   };
 
   const openModal = (record = null) => {
     setError("");
     if (record) {
+      const parsed = parseRecordValue(record);
       setFormData({
-        ...record,
-        priority: record.priority || "",
-        comment: record.comment || "",
+        domain: parsed.domain || domain,
+        type: parsed.type || "A",
+        name: parsed.name || "",
+        value: parsed.value || "",
+        ttl: parsed.ttl || 3600,
+        priority: parsed.priority ?? "",
+        weight: parsed.weight ?? "",
+        port: parsed.port ?? "",
+        target: parsed.target ?? "",
+        primary: parsed.primary ?? "",
+        admin: parsed.admin ?? "",
+        serial: parsed.serial ?? "",
+        refresh: parsed.refresh ?? "",
+        retry: parsed.retry ?? "",
+        expire: parsed.expire ?? "",
+        minimum: parsed.minimum ?? "",
+        flags: parsed.flags ?? "",
+        tag: parsed.tag ?? "",
+        comment: parsed.comment ?? "",
+        id: parsed.id, // important: preserve id to trigger update
       });
-      setEditingRecord(record);
+      setEditingRecord(parsed);
     } else {
       resetForm();
     }
     setShowModal(true);
+  };
+
+  // Close modal by clicking backdrop or cancel - clear errors
+  const closeModal = () => {
+    setShowModal(false);
+    setError("");
+    // reset form to be safe
+    resetForm();
   };
 
   // Check if user is authenticated
@@ -440,10 +617,9 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   // On mount, fetch user domains and set selected domain if provided
   useEffect(() => {
     if (checkAuth()) {
+      // prefer to set selectedDomain first so fetchUserDomains does not overwrite it accidentally
+      if (selectedDomain) setDomain(selectedDomain);
       fetchUserDomains();
-      if (selectedDomain) {
-        setDomain(selectedDomain);
-      }
     }
     // eslint-disable-next-line
   }, [selectedDomain]);
@@ -454,6 +630,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
       fetchRecords();
       fetchStats();
     }
+    // eslint-disable-next-line
   }, [domain, currentPage, filters]);
 
   // Clear error after 5 seconds
@@ -466,7 +643,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
 
   return (
     <div className="dns-config-management">
-      {loading && (
+      {(loadingRecords || actionLoading) && (
         <div className="dns-config-loading-overlay">
           <div
             className="spinner-border dns-config-spinner-custom"
@@ -548,7 +725,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                   {userDomains.map((dom) => (
                     <option key={dom.domain} value={dom.domain}>
                       {dom.domain}
-                      {dom.owner && dom.owner.merchant_name
+                      {dom.owner?.merchant_name
                         ? ` (Owner: ${dom.owner.merchant_name})`
                         : ""}
                     </option>
@@ -581,12 +758,20 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
             </div>
           </div>
         </div>
+
         {/* Add Domain Modal */}
         {showAddDomainModal && (
           <div
             className="modal show d-block"
             tabIndex="-1"
             style={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+            onClick={(e) => {
+              // Clicking on backdrop should close the Add Domain modal (not the record modal)
+              if (e.target === e.currentTarget) {
+                setShowAddDomainModal(false);
+                setNewDomain("");
+              }
+            }}
           >
             <div className="modal-dialog">
               <div className="modal-content">
@@ -755,6 +940,116 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
               {records.length > 0 ? (
                 records.map((rec) => {
                   const record = parseRecordValue(rec);
+
+                  // build a short single-line display and a multi-line tooltip string
+                  const buildTooltipAndDisplay = () => {
+                    // tooltip lines collected here
+                    const lines = [];
+
+                    switch (record.type) {
+                      case "SRV":
+                        // compact display: target:port (no priority shown here because you have a separate column)
+                        lines.push(`Target: ${record.target ?? "-"}`);
+                        lines.push(`Port: ${record.port ?? "-"}`);
+                        lines.push(`Weight: ${record.weight ?? "-"}`);
+                        lines.push(`Priority: ${record.priority ?? "-"}`); // tooltip includes priority
+                        if (record.comment)
+                          lines.push(`Comment: ${record.comment}`);
+                        // display (short)
+                        return {
+                          display: `${record.target ?? "-"}:${
+                            record.port ?? "-"
+                          }`,
+                          tooltip: lines.join("\n"),
+                        };
+
+                      case "SOA":
+                        lines.push(`Primary: ${record.primary ?? "-"}`);
+                        lines.push(`Admin: ${record.admin ?? "-"}`);
+                        lines.push(`Serial: ${record.serial ?? "-"}`);
+                        lines.push(`Refresh: ${record.refresh ?? "-"}`);
+                        lines.push(`Retry: ${record.retry ?? "-"}`);
+                        lines.push(`Expire: ${record.expire ?? "-"}`);
+                        lines.push(`Minimum: ${record.minimum ?? "-"}`);
+                        if (record.comment)
+                          lines.push(`Comment: ${record.comment}`);
+                        return {
+                          display: `${record.primary ?? "-"} (${
+                            record.admin ?? "-"
+                          })`,
+                          tooltip: lines.join("\n"),
+                        };
+
+                      case "CAA": {
+                        const caaVal = record.caaValue ?? record.value ?? "";
+                        lines.push(`Flags: ${record.flags ?? "-"}`);
+                        lines.push(`Tag: ${record.tag ?? "-"}`);
+                        lines.push(`Value: ${caaVal || "-"}`);
+                        if (record.comment)
+                          lines.push(`Comment: ${record.comment}`);
+                        return {
+                          display: `${record.flags ?? "-"} ${
+                            record.tag ?? "-"
+                          } "${caaVal}"`,
+                          tooltip: lines.join("\n"),
+                        };
+                      }
+
+                      case "MX":
+                        lines.push(`Mail Server: ${record.value ?? "-"}`);
+                        lines.push(`Priority: ${record.priority ?? "-"}`); // priority included in tooltip
+                        if (record.comment)
+                          lines.push(`Comment: ${record.comment}`);
+                        return {
+                          display: `${record.value ?? "-"}`, // no priority here (priority column exists)
+                          tooltip: lines.join("\n"),
+                        };
+
+                      case "TXT": {
+                        const txt = record.value ?? "";
+                        lines.push(txt || "-");
+                        if (record.comment)
+                          lines.push(`Comment: ${record.comment}`);
+                        const short =
+                          txt.length > 40 ? txt.slice(0, 40) + "..." : txt;
+                        return {
+                          display: short || "-",
+                          tooltip: lines.join("\n"),
+                        };
+                      }
+
+                      // simple single-line types
+                      case "PTR":
+                      case "CNAME":
+                      case "NS":
+                      case "A":
+                      case "AAAA": {
+                        lines.push(`${record.value ?? "-"}`);
+                        if (record.comment)
+                          lines.push(`Comment: ${record.comment}`);
+                        return {
+                          display: `${record.value ?? "-"}`,
+                          tooltip: lines.join("\n"),
+                        };
+                      }
+
+                      default: {
+                        const val = record.value ?? "";
+                        lines.push(val || "-");
+                        if (record.comment)
+                          lines.push(`Comment: ${record.comment}`);
+                        const short =
+                          val.length > 40 ? val.slice(0, 40) + "..." : val;
+                        return {
+                          display: short || "-",
+                          tooltip: lines.join("\n"),
+                        };
+                      }
+                    }
+                  };
+
+                  const { display, tooltip } = buildTooltipAndDisplay();
+
                   return (
                     <tr key={record.id}>
                       <td>
@@ -762,123 +1057,34 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                           {record.type}
                         </span>
                       </td>
+
                       <td>
                         <strong>{record.name || "@"}</strong>
                       </td>
-                      {/* Value column: show parsed fields for complex types */}
-                      <td>
-                        {record.type === "SRV" ? (
-                          <div>
-                            <div>
-                              <b>Target:</b> {record.target}
-                            </div>
-                            <div>
-                              <b>Port:</b> {record.port}
-                            </div>
-                            <div>
-                              <b>Priority:</b> {record.priority}
-                            </div>
-                            <div>
-                              <b>Weight:</b> {record.weight}
-                            </div>
-                          </div>
-                        ) : record.type === "SOA" ? (
-                          <div>
-                            <div>
-                              <b>Primary:</b> {record.primary}
-                            </div>
-                            <div>
-                              <b>Admin:</b> {record.admin}
-                            </div>
-                            <div>
-                              <b>Serial:</b> {record.serial}
-                            </div>
-                            <div>
-                              <b>Refresh:</b> {record.refresh}
-                            </div>
-                            <div>
-                              <b>Retry:</b> {record.retry}
-                            </div>
-                            <div>
-                              <b>Expire:</b> {record.expire}
-                            </div>
-                            <div>
-                              <b>Minimum:</b> {record.minimum}
-                            </div>
-                          </div>
-                        ) : record.type === "CAA" ? (
-                          <div>
-                            <div>
-                              <b>Flags:</b> {record.flags}
-                            </div>
-                            <div>
-                              <b>Tag:</b> {record.tag}
-                            </div>
-                            <div>
-                              <b>Value:</b> {record.caaValue}
-                            </div>
-                          </div>
-                        ) : record.type === "MX" ? (
-                          <div>
-                            <div>
-                              <b>Mail Server:</b> {record.value}
-                            </div>
-                            <div>
-                              <b>Priority:</b> {record.priority}
-                            </div>
-                          </div>
-                        ) : record.type === "PTR" ? (
-                          <div>
-                            <div>
-                              <b>Pointer:</b> {record.value}
-                            </div>
-                          </div>
-                        ) : record.type === "CNAME" ? (
-                          <div>
-                            <div>
-                              <b>Alias For:</b> {record.value}
-                            </div>
-                          </div>
-                        ) : record.type === "NS" ? (
-                          <div>
-                            <div>
-                              <b>Name Server:</b> {record.value}
-                            </div>
-                          </div>
-                        ) : record.type === "A" ? (
-                          <div>
-                            <div>
-                              <b>IPv4 Address:</b> {record.value}
-                            </div>
-                          </div>
-                        ) : record.type === "AAAA" ? (
-                          <div>
-                            <div>
-                              <b>IPv6 Address:</b> {record.value}
-                            </div>
-                          </div>
-                        ) : record.type === "TXT" ? (
-                          <div>
-                            <div>
-                              <b>Text:</b> {record.value}
-                            </div>
-                          </div>
-                        ) : (
-                          <div>
-                            <div>
-                              <b>Value:</b> {record.value}
-                            </div>
-                          </div>
-                        )}
+
+                      {/* Compact single-line value with native tooltip (hover shows full details) */}
+                      <td
+                        title={tooltip}
+                        style={{
+                          maxWidth: 320,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {display}
                       </td>
+
                       {/* TTL */}
                       <td>{record.ttl}s</td>
-                      {/* Priority: show for MX and SRV */}
+
+                      {/* Priority: only show for MX & SRV (keeps it singular) */}
                       <td>
                         {["MX", "SRV"].includes(record.type)
-                          ? record.priority
+                          ? record.priority ?? "-"
                           : "-"}
                       </td>
+
                       {/* Status */}
                       <td>
                         <span
@@ -891,6 +1097,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                           {record.isActive ? "● Active" : "○ Inactive"}
                         </span>
                       </td>
+
                       {/* Actions */}
                       <td>
                         <div className="btn-group">
@@ -979,6 +1186,9 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
           className="modal show d-block"
           tabIndex="-1"
           style={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeModal();
+          }}
         >
           <div className="modal-dialog modal-lg">
             <div className="modal-content">
@@ -989,7 +1199,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                 <button
                   type="button"
                   className="btn-close"
-                  onClick={() => setShowModal(false)}
+                  onClick={() => closeModal()}
                 ></button>
               </div>
 
@@ -1371,7 +1581,7 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    onClick={() => setShowModal(false)}
+                    onClick={() => closeModal()}
                   >
                     Cancel
                   </button>
@@ -1379,9 +1589,9 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
                     type="button"
                     className="btn btn-primary dns-config-btn-primary"
                     onClick={handleSubmit}
-                    disabled={loading}
+                    disabled={actionLoading}
                   >
-                    {loading ? (
+                    {actionLoading ? (
                       <>
                         <span
                           className="spinner-border spinner-border-sm me-2"
@@ -1405,4 +1615,4 @@ const DNSManagement = ({ selectedDomain, onGoToDashboard, onLogout }) => {
   );
 };
 
-export default DNSManagement;
+export default Configuration;
