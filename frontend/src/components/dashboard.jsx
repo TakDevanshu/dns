@@ -608,7 +608,7 @@ const Dashboard = ({ onGoToConfig }) => {
                         </thead>
                         <tbody>
                           {team.map((member) => {
-                            const userIdKey = member.User?.id ?? member.id ?? Math.random();
+                            const userIdKey = (member.User && member.User.id) || member.id || Math.random();
                             return (
                               <tr key={userIdKey}>
                                 <td>{member.User?.email ?? "—"}</td>
